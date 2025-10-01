@@ -7,7 +7,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use malachite::base::num::basic::traits::{One, Zero};
 use malachite::{rational::Rational, Integer};
 use malachite::base::num::arithmetic::traits::{Abs, NegAssign, Sign};
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, DVectorSlice, DVectorView};
 
 use crate::pslq::{checked_integer_relation, checked_integer_relation_product, IntegerRelationError};
 
@@ -377,7 +377,7 @@ pub enum BasedExpr {
     /// The basis is unknown. Used when a value is needed and the basis can't be passed in
     Undefined(Rational),
     /// The basis is the list of `SqrtExpr`. The first element of the basis must be 1.
-    Based(Vec<Rational>, ArcBasis)
+    Based(DVector<Rational>, ArcBasis)
 }
 
 impl Default for BasedExpr {
@@ -407,7 +407,7 @@ impl BasedExpr {
             coeffs.insert(0, 0u64.into());
             basis.insert(0, SqrtExpr::ONE);
         }
-        Ok(BasedExpr::Based(coeffs, Basis::new_arc_checked(basis)?))
+        Ok(BasedExpr::Based(coeffs.into(), Basis::new_arc_checked(basis)?))
     }
 
     /// Constructs a BasedExpr from its terms. The basis is defined by the second values of each entry.
@@ -419,7 +419,7 @@ impl BasedExpr {
     fn based_rational(q: Rational, basis: ArcBasis) -> Self {
         let mut coeffs = vec![Rational::ZERO; basis.exprs.len()];
         coeffs[0] = q;
-        Self::Based(coeffs, basis)
+        Self::Based(coeffs.into(), basis)
     }
 
     fn has_basis(&self) -> bool {
@@ -442,45 +442,45 @@ impl BasedExpr {
         }
     }
 
-    fn into_coeffs_basis(self) -> (Vec<Rational>, Option<ArcBasis>) {
+    fn into_coeffs_basis(self) -> (DVector<Rational>, Option<ArcBasis>) {
         match self {
-            Self::Undefined(q) => (vec![q], None),
+            Self::Undefined(q) => (vec![q].into(), None),
             Self::Based(coeffs, basis) => (coeffs, Some(basis))
         }
     }
 
-    fn to_coeffs_basis(&self) -> (&[Rational], Option<&ArcBasis>) {
+    fn to_coeffs_basis(&'_ self) -> (DVectorView<'_, Rational>, Option<&'_ ArcBasis>) {
         match self {
-            Self::Undefined(q) => (std::slice::from_ref(q), None),
-            Self::Based(coeffs, basis) => (coeffs, Some(basis))
+            Self::Undefined(q) => (DVectorView::from_slice(std::slice::from_ref(q), 1), None),
+            Self::Based(coeffs, basis) => (coeffs.as_view(), Some(basis))
         }
     }
 
-    fn into_coeffs_basis_2(self, other: BasedExpr) -> (Vec<Rational>, Vec<Rational>, Option<ArcBasis>) {
+    fn into_coeffs_basis_2(self, other: BasedExpr) -> (DVector<Rational>, DVector<Rational>, Option<ArcBasis>) {
         let (coeffs_a, basis_a) = self.into_coeffs_basis();
         let (coeffs_b, basis_b) = other.into_coeffs_basis();
         (coeffs_a, coeffs_b, ArcBasis::into_unified(basis_a, basis_b))
     }
 
-    fn into_coeffs_basis_2_vr(self, other: &BasedExpr) -> (Vec<Rational>, &[Rational], Option<ArcBasis>) {
+    fn into_coeffs_basis_2_vr(self, other: &'_ BasedExpr) -> (DVector<Rational>, DVectorView<'_, Rational>, Option<ArcBasis>) {
         let (coeffs_a, basis_a) = self.into_coeffs_basis();
         let (coeffs_b, basis_b) = other.to_coeffs_basis();
         (coeffs_a, coeffs_b, ArcBasis::into_unified_vr(basis_a, basis_b))
     }
 
-    fn into_coeffs_basis_2_rv(&self, other: BasedExpr) -> (&[Rational], Vec<Rational>, Option<ArcBasis>) {
+    fn into_coeffs_basis_2_rv(&'_ self, other: BasedExpr) -> (DVectorView<'_, Rational>, DVector<Rational>, Option<ArcBasis>) {
         let (coeffs_a, basis_a) = self.to_coeffs_basis();
         let (coeffs_b, basis_b) = other.into_coeffs_basis();
         (coeffs_a, coeffs_b, ArcBasis::into_unified_rv(basis_a, basis_b))
     }
 
-    fn into_coeffs_basis_2_rr<'a>(&'a self, other: &'a BasedExpr) -> (&'a [Rational], &'a [Rational], Option<ArcBasis>) {
+    fn into_coeffs_basis_2_rr<'a>(&'a self, other: &'a BasedExpr) -> (DVectorView<'a, Rational>, DVectorView<'a, Rational>, Option<ArcBasis>) {
         let (coeffs_a, basis_a) = self.to_coeffs_basis();
         let (coeffs_b, basis_b) = other.to_coeffs_basis();
         (coeffs_a, coeffs_b, ArcBasis::to_unified(basis_a, basis_b).cloned())
     }
 
-    fn to_coeffs_basis_2<'a>(&'a self, other: &'a BasedExpr) -> (&'a [Rational], &'a [Rational], Option<&'a ArcBasis>) {
+    fn to_coeffs_basis_2<'a>(&'a self, other: &'a BasedExpr) -> (DVectorView<'a, Rational>, DVectorView<'a, Rational>, Option<&'a ArcBasis>) {
         let (coeffs_a, basis_a) = self.to_coeffs_basis();
         let (coeffs_b, basis_b) = other.to_coeffs_basis();
         (coeffs_a, coeffs_b, ArcBasis::to_unified(basis_a, basis_b))
@@ -539,7 +539,7 @@ impl AddAssign<BasedExpr> for BasedExpr {
             (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
             (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
                 basis_a.assert_compatible(&basis_b);
-                a.iter_mut().zip(b.iter()).for_each(|(a, b)| *a += b)
+                *a += b;
             }
         }
     }
@@ -558,7 +558,7 @@ impl AddAssign<&BasedExpr> for BasedExpr {
             (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
             (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
                 basis_a.assert_compatible(&basis_b);
-                a.iter_mut().zip(b.iter()).for_each(|(a, b)| *a += b)
+                *a += b;
             }
         }
     }
@@ -639,7 +639,7 @@ impl SubAssign<BasedExpr> for BasedExpr {
             (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
             (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
                 basis_a.assert_compatible(&basis_b);
-                a.iter_mut().zip(b.iter()).for_each(|(a, b)| *a -= b)
+                *a -= b;
             }
         }
     }
@@ -658,7 +658,7 @@ impl SubAssign<&BasedExpr> for BasedExpr {
             (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
             (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
                 basis_a.assert_compatible(&basis_b);
-                a.iter_mut().zip(b.iter()).for_each(|(a, b)| *a -= b)
+                *a -= b;
             }
         }
     }
@@ -710,11 +710,11 @@ impl MulAssign<BasedExpr> for BasedExpr {
             (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
             (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
                 basis_a.assert_compatible(&basis_b);
-                *a = basis_a.matrices.iter().map(|mtx| {
+                *a = DVector::from_iterator(a.len(), basis_a.matrices.iter().map(|mtx| {
                     mtx.iter().map(|(coeff, ai, bi)| {
                         coeff * &a[*ai] * &b[*bi]
                     }).sum()
-                }).collect::<Vec<_>>();
+                }));
             }
         }
     }
@@ -733,11 +733,11 @@ impl MulAssign<&BasedExpr> for BasedExpr {
             (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
             (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
                 basis_a.assert_compatible(&basis_b);
-                *a = basis_a.matrices.iter().map(|mtx| {
+                *a = DVector::from_iterator(a.len(), basis_a.matrices.iter().map(|mtx| {
                     mtx.iter().map(|(coeff, ai, bi)| {
                         coeff * &a[*ai] * &b[*bi]
                     }).sum()
-                }).collect::<Vec<_>>();
+                }));
             }
         }
     }
