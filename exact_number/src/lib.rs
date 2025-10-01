@@ -4,9 +4,11 @@ use std::fmt::{Debug, Display};
 use std::ops::{Add, AddAssign, Deref, MulAssign, Neg, Sub, SubAssign};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use malachite::base::num::basic::traits::Zero;
+use malachite::base::num::basic::traits::{One, Zero};
 use malachite::{rational::Rational, Integer};
 use malachite::base::num::arithmetic::traits::{Abs, NegAssign, Sign};
+
+use crate::pslq::{checked_integer_relation, IntegerRelationError};
 
 mod pslq;
 mod algebraic;
@@ -100,10 +102,15 @@ macro_rules! based_expr {
     };
 }
 
+pub type SqrtExprSum = Vec<(Integer, SqrtExpr)>;
 #[derive(Clone, PartialEq, Eq)]
 pub enum SqrtExpr {
     Int(Integer),
-    Sum(Vec<(Integer, SqrtExpr)>)
+    Sum(SqrtExprSum)
+}
+
+impl SqrtExpr {
+    pub const ONE: SqrtExpr = SqrtExpr::Int(Integer::ONE);
 }
 
 impl Display for SqrtExpr {
@@ -139,16 +146,55 @@ pub struct Basis {
     pub matrices: Vec<Vec<(Integer, usize, usize)>>,
 }
 
+/// An error from trying to check a basis
+#[derive(Clone, Debug)]
+pub enum BasisError {
+    /// Linear combination that proves linear dependence
+    LinearlyDependent(Vec<Integer>),
+    /// (a, b, error), where a * b is linearly independent with the "basis"
+    NotClosed(SqrtExpr, SqrtExpr, IntegerRelationError),
+    /// The first element is not 1.
+    FirstElementNotOne
+}
+
 impl Basis {
-    fn calc_matrices(basis: &[SqrtExpr]) -> Vec<Vec<(Integer, usize, usize)>> {
+    fn calc_matrices(basis: &[SqrtExpr]) -> Result<Vec<Vec<(Integer, usize, usize)>>, BasisError> {
         let mut result = vec![vec![] as Vec<(Integer, usize, usize)>; basis.len()];
         for i in 0..basis.len() {
             for j in 0..i {
+                let b0 = &basis[i];
+                let b1 = &basis[j];
+                if b0 == &SqrtExpr::ONE {
+                    continue;
+                } else if b1 == &SqrtExpr::ONE {
+                    continue;
+                } else if b0 == b1 {
+                    if ... {
+                        continue;
+                    }
+                }
+
+                // Preliminary tricks
                 let prod = 1;// basis[i] * basis[j];
             }
         }
         vec![]
         //unimplemented!()
+    }
+
+    /// Checks that this is actually a closed basis.
+    /// Guarantees that the basis is closed, but doesn't guarantee
+    /// that it's linearly independent, even though it tries its best.
+    fn new_checked(basis: Vec<SqrtExpr>) -> Result<Self, BasisError> {
+        if basis.len() == 0 || basis[0] != SqrtExpr::ONE {
+            Err(BasisError::FirstElementNotOne)?;
+        }
+        if let Ok(coeffs) = checked_integer_relation(&basis) {
+            Err(BasisError::LinearlyDependent(coeffs))?;
+        }
+
+        let matrices = Self::calc_matrices(&basis);
+        Self { exprs: basis, matrices }
     }
 
     fn new(basis: Vec<SqrtExpr>) -> Self {
@@ -157,7 +203,7 @@ impl Basis {
     }
 
     fn new_arc(basis: Vec<SqrtExpr>) -> ArcBasis {
-        if basis[0] != SqrtExpr::Int(1u64.into()) {
+        if basis[0] != SqrtExpr::ONE {
             panic!("First element of basis must be 1, not {}", basis[0]);
         }
         //println!("Basis: {:?}", basis);
@@ -319,9 +365,9 @@ impl BasedExpr {
     /// Constructs a BasedExpr from its terms. The basis is defined by the second values of each entry.
     pub fn from_terms(terms: impl IntoIterator<Item = (Rational, SqrtExpr)>) -> Self {
         let (mut coeffs, mut basis): (Vec<_>, Vec<_>) = terms.into_iter().unzip();
-        if basis[0] != SqrtExpr::Int(1u64.into()) {
+        if basis[0] != SqrtExpr::ONE {
             coeffs.insert(0, 0u64.into());
-            basis.insert(0, SqrtExpr::Int(1u64.into()));
+            basis.insert(0, SqrtExpr::ONE);
         }
         BasedExpr::Based(coeffs, Basis::new_arc(basis))
     }

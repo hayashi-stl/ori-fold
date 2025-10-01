@@ -9,27 +9,29 @@ use malachite::Natural;
 use malachite::{rational::Rational, Integer};
 use nalgebra::{DMatrix, DVector};
 
-use crate::SqrtExpr;
+use crate::algebraic::{check_combination, check_combination_target};
+use crate::{SqrtExpr, SqrtExprSum};
 
 #[derive(Clone, Debug)]
-enum PslqError {
+pub enum IntegerRelationError {
     ZeroInBasis,
     SizeOneBasis,
     DivisionByZero,
     OutOfPrecision,
+    WasWrongGaveUp,
 }
 
-fn checked_div_v(a: FBig, b: FBig) -> Result<FBig, PslqError> {
-    if b == FBig::<dashu_float::round::mode::Zero, 2>::ZERO { Err(PslqError::DivisionByZero)?; }
+fn checked_div_v(a: FBig, b: FBig) -> Result<FBig, IntegerRelationError> {
+    if b == FBig::<dashu_float::round::mode::Zero, 2>::ZERO { Err(IntegerRelationError::DivisionByZero)?; }
     Ok(a / b)
 }
 
-fn checked_div_r(a: &FBig, b: &FBig) -> Result<FBig, PslqError> {
-    if b == &FBig::<dashu_float::round::mode::Zero, 2>::ZERO { Err(PslqError::DivisionByZero)?; }
+fn checked_div_r(a: &FBig, b: &FBig) -> Result<FBig, IntegerRelationError> {
+    if b == &FBig::<dashu_float::round::mode::Zero, 2>::ZERO { Err(IntegerRelationError::DivisionByZero)?; }
     Ok(a / b)
 }
 
-fn checked_round(a: FBig) -> Result<FBig, PslqError> {
+fn checked_round(a: FBig) -> Result<FBig, IntegerRelationError> {
     // Skip the panicking
     #[cfg(debug_assertions)]
     {
@@ -41,7 +43,7 @@ fn checked_round(a: FBig) -> Result<FBig, PslqError> {
                 a.fract().into_repr().into_parts()
             };
             println!("int: {}, fract: {}, exp: {}, true exp: {}", a.trunc(), fract, exponent, a.repr().exponent());
-            if exponent <= 0 && fract.clone().unsigned_abs() >= UBig::from_word(2).pow(-exponent as usize) { Err(PslqError::OutOfPrecision)?; }
+            if exponent <= 0 && fract.clone().unsigned_abs() >= UBig::from_word(2).pow(-exponent as usize) { Err(IntegerRelationError::OutOfPrecision)?; }
         }
     }
     Ok(a.round())
@@ -53,9 +55,9 @@ fn checked_round(a: FBig) -> Result<FBig, PslqError> {
 /// The result cannot be trusted as is and should be checked.
 /// 
 /// See https://www.davidhbailey.com/dhbtalks/dhb-carma-20100824.pdf
-fn maybe_integer_relation(basis: &[FBig], gamma: FBig) -> Result<Vec<Integer>, PslqError>  {
+fn maybe_integer_relation(basis: &[FBig], gamma: FBig) -> Result<Vec<Integer>, IntegerRelationError>  {
     if basis.len() == 0 { return Ok(vec![]); }
-    if basis.len() == 1 { return Err(PslqError::SizeOneBasis); }
+    if basis.len() == 1 { return Err(IntegerRelationError::SizeOneBasis); }
 
     let precision = basis.iter().map(|b| b.precision()).max().unwrap();
     let zero = FBig::ZERO.with_precision(precision).value();
@@ -120,7 +122,7 @@ fn maybe_integer_relation(basis: &[FBig], gamma: FBig) -> Result<Vec<Integer>, P
     loop {
         // Step 6: Termination test
         if A.iter().map(|a| a.clone().abs()).max().unwrap() > max_magnitude {
-            return Err(PslqError::OutOfPrecision); // Precision exhausted
+            return Err(IntegerRelationError::OutOfPrecision); // Precision exhausted
         }
         let min_y = y.iter().cloned().map(|a| a.abs()).enumerate().min_by_key(|(_, y)| y.clone()).unwrap();
         if prev_min_y.1 == zero || prev_min_y.1 > &min_y.1 * &detection {
@@ -149,7 +151,7 @@ fn maybe_integer_relation(basis: &[FBig], gamma: FBig) -> Result<Vec<Integer>, P
         // Step 3: Remove corner on H diagonal
         if m < basis.len() - 2 {
             let t0 = (H[(m, m)].sqr() + H[(m, m + 1)].sqr()).sqrt();
-            if t0 == zero { Err(PslqError::DivisionByZero)?; }
+            if t0 == zero { Err(IntegerRelationError::DivisionByZero)?; }
             let t1 = &H[(m, m)] / &t0;
             let t2 = &H[(m, m + 1)] / &t0;
             for i in m..basis.len() {
@@ -164,7 +166,7 @@ fn maybe_integer_relation(basis: &[FBig], gamma: FBig) -> Result<Vec<Integer>, P
         // Step 4: Reduce H
         for i in (m + 1)..basis.len() {
             for j in (0..=(i - 1).min(m + 1)).rev() {
-                if H[(j, j)] == zero { Err(PslqError::DivisionByZero)?; }
+                if H[(j, j)] == zero { Err(IntegerRelationError::DivisionByZero)?; }
                 let t = checked_round(checked_div_r(&H[(i, j)], &H[(j, j)])?)?;
                 y[j] = &y[j] + &t * &y[i];
                 for k in 0..=j {
@@ -182,18 +184,46 @@ fn maybe_integer_relation(basis: &[FBig], gamma: FBig) -> Result<Vec<Integer>, P
     }
 }
 
+pub(crate) fn checked_integer_relation(basis: &[SqrtExpr]) -> Result<Vec<Integer>, IntegerRelationError> {
+    let precision = 75;
+    let fbig_basis = basis.iter().map(|b| b.to_fbig(precision)).collect::<Vec<_>>();
+
+    let coeffs = maybe_integer_relation(&fbig_basis, FBig::<dashu_float::round::mode::Zero, 2>::from(2))?;
+    if !check_combination(&coeffs, basis) {
+        Err(IntegerRelationError::WasWrongGaveUp)?;
+    }
+
+    Ok(coeffs)
+}
+
+pub(crate) fn checked_integer_relation_target(basis: &[SqrtExpr], target: &SqrtExprSum) -> Result<Vec<Integer>, IntegerRelationError> {
+    let precision = 75;
+    let mut fbig_basis = basis.iter().map(|b| b.to_fbig(precision)).collect::<Vec<_>>();
+    fbig_basis.push(terms_to_fbig(target, precision));
+
+    let coeffs = maybe_integer_relation(&fbig_basis, FBig::<dashu_float::round::mode::Zero, 2>::from(2))?;
+    if !check_combination_target(&coeffs, basis, target) {
+        Err(IntegerRelationError::WasWrongGaveUp)?;
+    }
+
+    Ok(coeffs)
+}
+
 fn integer_to_fbig(int: &Integer, precision: usize) -> FBig {
     let words = int.unsigned_abs_ref().to_limbs_asc();
     let ibig = IBig::from_parts(if int < &Integer::ZERO {Sign::Negative} else {Sign::Positive}, UBig::from_words(&words));
     FBig::from(ibig).with_precision(precision).value()
 }
 
+fn terms_to_fbig(terms: &SqrtExprSum, precision: usize) -> FBig {
+    terms.iter().map(|(coeff, sqrt)| integer_to_fbig(coeff, precision) * sqrt.to_fbig(precision)).sum::<FBig>().sqrt()
+}
+
 impl SqrtExpr {
     fn to_fbig(&self, precision: usize) -> FBig {
         match self {
             Self::Int(i) => integer_to_fbig(i, precision).sqrt(),
-            Self::Sum(terms) =>
-                terms.iter().map(|(coeff, sqrt)| integer_to_fbig(coeff, precision) * sqrt.to_fbig(precision)).sum::<FBig>().sqrt()
+            Self::Sum(terms) => terms_to_fbig(terms, precision).sqrt()
         }
     }
 }
