@@ -26,16 +26,15 @@ fn integer_to_algebraic(int: &Integer) -> RealAlgebraicNumber {
 }
 
 fn terms_to_algebraic(terms: &SqrtExprSum) -> RealAlgebraicNumber {
-    terms.iter().map(|(coeff, sqrt)| sqrt.to_algebraic() * integer_to_algebraic(coeff))
-        .fold(RealAlgebraicNumber::zero(), |acc, curr| acc + curr)
-        .pow((1, 2))
+    dbg!(terms.iter().map(|(coeff, sqrt)| sqrt.to_algebraic() * integer_to_algebraic(coeff))
+        .fold(RealAlgebraicNumber::zero(), |acc, curr| acc + curr))
 }
 
 impl SqrtExpr {
     fn to_algebraic(&self) -> RealAlgebraicNumber {
         match self {
             Self::Int(int) => integer_to_algebraic(int).pow((1, 2)),
-            Self::Sum(terms) => terms_to_algebraic(terms),
+            Self::Sum(terms) => terms_to_algebraic(terms).pow((1, 2)),
         }
     }
 }
@@ -51,7 +50,7 @@ pub(crate) fn check_combination(coeffs: &[Integer], basis: &[SqrtExpr]) -> bool 
         .is_zero()
 }
 
-pub(crate) fn check_combination_target(coeffs: &[Integer], basis: &[SqrtExpr], target: &SqrtExprSum) -> bool {
+pub(crate) fn check_combination_product(coeffs: &[Integer], basis: &[SqrtExpr], factor_a: &SqrtExpr, factor_b: &SqrtExpr) -> bool {
     coeffs.iter().zip(basis.iter())
         .map(|(coeff, b)| {
             let coeff = integer_to_algebraic(coeff);
@@ -60,19 +59,23 @@ pub(crate) fn check_combination_target(coeffs: &[Integer], basis: &[SqrtExpr], t
         })
         .chain(once({
             let coeff = integer_to_algebraic(coeffs.last().unwrap());
-            let b = terms_to_algebraic(target);
+            let b = factor_a.to_algebraic() * factor_b.to_algebraic();
             coeff * b
         }))
-        .fold(RealAlgebraicNumber::zero(), |acc, curr| acc + curr)
+        .fold(RealAlgebraicNumber::zero(), |acc, curr| {
+            let acc = dbg!(acc);
+            let curr = dbg!(curr);
+            dbg!(acc + curr)
+        })
         .is_zero()
 }
 
 #[cfg(test)]
 mod test {
     use algebraics::RealAlgebraicNumber;
-    use num::traits::Pow;
+    use num::traits::{Pow, Zero};
 
-    use crate::{algebraic::check_combination, sqrt_expr};
+    use crate::{algebraic::{check_combination, check_combination_product}, sqrt_expr};
 
     #[test]
     fn test_to_algebraic_perfect_square() {
@@ -131,5 +134,24 @@ mod test {
         let basis = [sqrt_expr!(1), sqrt_expr!(2), sqrt_expr!(18 - 8 sqrt 2)];
         let coeffs = [4.into(), (-1).into(), (-1).into()];
         assert!(check_combination(&coeffs, &basis));
+    }
+
+    #[test]
+    fn test_check_basis_product_past_fail() {
+        let basis = vec![sqrt_expr!(1), sqrt_expr!(2), sqrt_expr!(2 + sqrt 2), sqrt_expr!(2 - sqrt 2)];
+        let a = sqrt_expr!(2);
+        let b = sqrt_expr!(2 - sqrt 2);
+        let coeffs = [0.into(), 0.into(), 1.into(), (-1).into(), (-1).into()];
+        assert!(check_combination_product(&coeffs, &basis, &a, &b));
+    }
+
+    #[test]
+    fn test_algebraics_0_3_0_fail() {
+        // This fails on algebraics version 0.3.0
+        let two = RealAlgebraicNumber::from(2);
+        let a = (&two + (&two).pow((1, 2))).pow((1, 2));
+        let b = (&two - (&two).pow((1, 2))).pow((1, 2));
+        let result = a - b;
+        assert_ne!(result, RealAlgebraicNumber::zero());
     }
 }

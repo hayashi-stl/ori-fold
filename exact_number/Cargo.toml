@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-algebraics = "0.3.0"
+# "0.3.0" has a fatal bug that makes it think √(2+√2) - √(2-√2) = 0
+algebraics = { git = "https://salsa.debian.org/Kazan-team/algebraics" }
 dashu-float = "0.4.3"
 dashu-int = "0.4.1"
 malachite = "0.6.1"

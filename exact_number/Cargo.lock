@@ -5,8 +5,7 @@ version = 4
 [[package]]
 name = "algebraics"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "887aa7866914fb447e2756311d540be7708f1e79224eb84d0e6180ec11d4c96b"
+source = "git+https://salsa.debian.org/Kazan-team/algebraics#3cd0b180717a5d1947dcba9b96a7f590e43ba21b"
 dependencies = [
  "lazy_static",
  "num-bigint",

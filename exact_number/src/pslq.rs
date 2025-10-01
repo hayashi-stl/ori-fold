@@ -9,10 +9,10 @@ use malachite::Natural;
 use malachite::{rational::Rational, Integer};
 use nalgebra::{DMatrix, DVector};
 
-use crate::algebraic::{check_combination, check_combination_target};
+use crate::algebraic::{check_combination, check_combination_product};
 use crate::{SqrtExpr, SqrtExprSum};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IntegerRelationError {
     ZeroInBasis,
     SizeOneBasis,
@@ -42,7 +42,7 @@ fn checked_round(a: FBig) -> Result<FBig, IntegerRelationError> {
             } else {
                 a.fract().into_repr().into_parts()
             };
-            println!("int: {}, fract: {}, exp: {}, true exp: {}", a.trunc(), fract, exponent, a.repr().exponent());
+            //println!("int: {}, fract: {}, exp: {}, true exp: {}", a.trunc(), fract, exponent, a.repr().exponent());
             if exponent <= 0 && fract.clone().unsigned_abs() >= UBig::from_word(2).pow(-exponent as usize) { Err(IntegerRelationError::OutOfPrecision)?; }
         }
     }
@@ -65,6 +65,8 @@ fn maybe_integer_relation(basis: &[FBig], gamma: FBig) -> Result<Vec<Integer>, I
     let two = &one + &one;
     let max_magnitude = two.powi((precision - 2).into());
     let detection = two.powi(32.into());
+    // Used for detecting coefficients that get discovered before an iteration is even performed.
+    let epsilon = two.powi((-(precision as isize) + 2).into());
 
     // Initialization
     // Step 1
@@ -114,7 +116,7 @@ fn maybe_integer_relation(basis: &[FBig], gamma: FBig) -> Result<Vec<Integer>, I
             B.set_column(j, &(B.column(j) + B.column(i) * t.clone()));
         }
     }
-    //println!("Step 4, H: {} A: {} B: {} y: {}", H, A, B, y);
+    //println!("Step 4, H: {} A: {} B: {} y: {}, eps: {}", H, A, B, y, epsilon);
 
     let mut prev_min_y = y.iter().cloned().enumerate().min_by_key(|(_, y)| y.clone().abs()).unwrap();
     let mut num_iters = 0;
@@ -125,7 +127,8 @@ fn maybe_integer_relation(basis: &[FBig], gamma: FBig) -> Result<Vec<Integer>, I
             return Err(IntegerRelationError::OutOfPrecision); // Precision exhausted
         }
         let min_y = y.iter().cloned().map(|a| a.abs()).enumerate().min_by_key(|(_, y)| y.clone()).unwrap();
-        if prev_min_y.1 == zero || prev_min_y.1 > &min_y.1 * &detection {
+        //println!("Step 6, min_y i: {} min_y: {} eps: {}, min_y < eps: {}", min_y.0, min_y.1, epsilon, min_y.1 < epsilon);
+        if (num_iters == 0 && min_y.1 < epsilon) || prev_min_y.1 > &min_y.1 * &detection {
             return Ok(B.column(min_y.0).iter().map(|b| {
                 let int = b.round().to_int().unwrap();
                 let (sign, words) = int.as_sign_words();
@@ -196,16 +199,20 @@ pub(crate) fn checked_integer_relation(basis: &[SqrtExpr]) -> Result<Vec<Integer
     Ok(coeffs)
 }
 
-pub(crate) fn checked_integer_relation_target(basis: &[SqrtExpr], target: &SqrtExprSum) -> Result<Vec<Integer>, IntegerRelationError> {
+/// Returns `factor_a` * `factor_b` as a rational linear combination of `basis`
+pub(crate) fn checked_integer_relation_product(basis: &[SqrtExpr], factor_a: &SqrtExpr, factor_b: &SqrtExpr) -> Result<Vec<Rational>, IntegerRelationError> {
     let precision = 75;
     let mut fbig_basis = basis.iter().map(|b| b.to_fbig(precision)).collect::<Vec<_>>();
-    fbig_basis.push(terms_to_fbig(target, precision));
+    fbig_basis.push(factor_a.to_fbig(precision) * factor_b.to_fbig(precision));
+    println!("fbig_basis: [{}]", fbig_basis.iter().map(|f| format!("{}, ", f.to_decimal().value())).collect::<String>());
 
-    let coeffs = maybe_integer_relation(&fbig_basis, FBig::<dashu_float::round::mode::Zero, 2>::from(2))?;
-    if !check_combination_target(&coeffs, basis, target) {
+    let mut coeffs = maybe_integer_relation(&fbig_basis, FBig::<dashu_float::round::mode::Zero, 2>::from(2))?;
+    if !check_combination_product(&coeffs, basis, factor_a, factor_b) {
         Err(IntegerRelationError::WasWrongGaveUp)?;
     }
 
+    let divisor = Rational::from(-coeffs.pop().unwrap());
+    let coeffs = coeffs.into_iter().map(|c| Rational::from(c) / &divisor).collect::<Vec<_>>();
     Ok(coeffs)
 }
 
@@ -216,7 +223,7 @@ fn integer_to_fbig(int: &Integer, precision: usize) -> FBig {
 }
 
 fn terms_to_fbig(terms: &SqrtExprSum, precision: usize) -> FBig {
-    terms.iter().map(|(coeff, sqrt)| integer_to_fbig(coeff, precision) * sqrt.to_fbig(precision)).sum::<FBig>().sqrt()
+    terms.iter().map(|(coeff, sqrt)| integer_to_fbig(coeff, precision) * sqrt.to_fbig(precision)).sum::<FBig>()
 }
 
 impl SqrtExpr {
@@ -232,14 +239,25 @@ impl SqrtExpr {
 mod test {
     use dashu_float::{round::Rounding, FBig};
     use dashu_float::round::mode;
+    use malachite::rational::Rational;
     use malachite::Integer;
 
-    use crate::pslq::maybe_integer_relation;
+    use crate::pslq::{checked_integer_relation_product, maybe_integer_relation};
     use crate::{sqrt_expr, SqrtExpr};
 
     fn assert_integer_relation(input: Vec<SqrtExpr>, expected: Option<Vec<i64>>) {
         let basis = input.iter().map(|b| b.to_fbig(50)).collect::<Vec<_>>();
         assert_integer_relation_fbig(basis, expected)
+    }
+
+    fn assert_integer_relation_product(input: Vec<SqrtExpr>, a: SqrtExpr, b: SqrtExpr, expected: Option<Vec<[i64; 2]>>) {
+        let expected = expected.map(|v| v.into_iter().map(|[n, d]|
+            Rational::from_integers(n.into(), d.into())).collect::<Vec<_>>());
+        let result = checked_integer_relation_product(&input, &a, &b);
+        match expected {
+            None => assert_eq!(result.ok(), None),
+            Some(mut expected) => assert_eq!(result, Ok(expected))
+        }
     }
 
     fn assert_integer_relation_fbig(basis: Vec<FBig>, expected: Option<Vec<i64>>) {
@@ -384,6 +402,16 @@ mod test {
         assert_integer_relation_fbig(
             powers,
             Some(vec![-1, 0, 0, 0, 3860, 0, 0, 0, 666, 0, 0, 0, 20, 0, 0, 0, -1]),
+        );
+    }
+
+    #[test]
+    fn test_relation_product_past_fail() {
+        assert_integer_relation_product(
+            vec![sqrt_expr!(1), sqrt_expr!(2), sqrt_expr!(2 + sqrt 2), sqrt_expr!(2 - sqrt 2)],
+            sqrt_expr!(2),
+            sqrt_expr!(2 - sqrt 2),
+            Some(vec![[0, 1], [0, 1], [1, 1], [-1, 1]])
         );
     }
 }
