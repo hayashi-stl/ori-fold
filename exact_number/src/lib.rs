@@ -1,11 +1,14 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Display};
-use std::ops::{Add, AddAssign, Deref, Neg, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Deref, MulAssign, Neg, Sub, SubAssign};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use malachite::base::num::basic::traits::Zero;
 use malachite::{rational::Rational, Integer};
 use malachite::base::num::arithmetic::traits::{Abs, NegAssign, Sign};
+
+mod pslq;
 
 #[macro_export]
 macro_rules! sqrt_expr_helper {
@@ -39,6 +42,13 @@ macro_rules! sqrt_expr_parse {
     ($( { $($init:tt)* } )* [+] $an:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* { true $an sqrt $($sqrt)* } $($tt)*) };
     ($( { $($init:tt)* } )* [-] $an:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* { false $an sqrt $($sqrt)* } $($tt)*) };
     ($( { $($terms:tt)* } )*) => { crate::sqrt_expr_helper!($( { $($terms)* } )*)}
+}
+
+#[macro_export]
+macro_rules! sqrt_expr {
+    ($($tt:tt)*) => {
+        crate::sqrt_expr_parse!($($tt)*)
+    };
 }
 
 #[macro_export]
@@ -121,12 +131,30 @@ impl Debug for SqrtExpr {
 static BASES: LazyLock<Mutex<RefCell<Vec<Arc<Basis>>>>> = LazyLock::new(|| Mutex::new(RefCell::new(vec![])));
 
 /// A basis of with-rational-coefficients linearly independent numbers. The first element must be 1.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Basis {
     pub exprs: Vec<SqrtExpr>,
+    /// Matrices stored sparsely, used for multiplication
+    pub matrices: Vec<Vec<(Integer, usize, usize)>>,
 }
 
 impl Basis {
+    fn calc_matrices(basis: &[SqrtExpr]) -> Vec<Vec<(Integer, usize, usize)>> {
+        let mut result = vec![vec![] as Vec<(Integer, usize, usize)>; basis.len()];
+        for i in 0..basis.len() {
+            for j in 0..i {
+                let prod = 1;// basis[i] * basis[j];
+            }
+        }
+        vec![]
+        //unimplemented!()
+    }
+
+    fn new(basis: Vec<SqrtExpr>) -> Self {
+        let matrices = Self::calc_matrices(&basis);
+        Self { exprs: basis, matrices }
+    }
+
     fn new_arc(basis: Vec<SqrtExpr>) -> ArcBasis {
         if basis[0] != SqrtExpr::Int(1u64.into()) {
             panic!("First element of basis must be 1, not {}", basis[0]);
@@ -136,13 +164,21 @@ impl Basis {
         let mut basis_vec = basis_lock.borrow_mut();
         let existing = basis_vec.iter().find(|b| &b.as_ref().exprs == &basis);
         let arc = existing.cloned().unwrap_or_else(|| {
-            let arc = Arc::new(Basis { exprs: basis });
+            let arc = Arc::new(Basis::new(basis));
             basis_vec.push(arc.clone());
             arc
         });
         ArcBasis(arc)
     }
 }
+
+impl PartialEq for Basis {
+    fn eq(&self, other: &Self) -> bool {
+        self.exprs == other.exprs
+    }
+}
+
+impl Eq for Basis {}
 
 #[derive(Clone, Debug)]
 pub struct ArcBasis(Arc<Basis>);
@@ -256,7 +292,7 @@ impl Drop for ArcBasis {
 
 /// An expression of a number, with a basis.
 /// Two values with different bases are incompatible and mixing them results in a panic.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum BasedExpr {
     /// The basis is unknown. Used when a value is needed and the basis can't be passed in
     Undefined(Rational),
@@ -376,6 +412,24 @@ impl Debug for BasedExpr {
         write!(f, "{}", self)
     }
 }
+
+impl PartialEq for BasedExpr {
+    fn eq(&self, other: &Self) -> bool {
+        if !self.has_basis() && other.has_basis() { return other == self }
+        match (self, other) {
+            (BasedExpr::Undefined(a), BasedExpr::Undefined(b)) => a == b,
+            (BasedExpr::Based(a, _), BasedExpr::Undefined(b)) =>
+                &a[0] == b && a.iter().skip(1).all(|q| q == &Rational::ZERO),
+            (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
+            (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
+                basis_a.assert_compatible(&basis_b);
+                a.iter().zip(b.iter()).all(|(a, b)| a == b)
+            }
+        }
+    }
+}
+
+impl Eq for BasedExpr {}
 
 impl AddAssign<BasedExpr> for BasedExpr {
     fn add_assign(&mut self, mut rhs: BasedExpr) {
@@ -548,6 +602,26 @@ impl<'a> Sub<&BasedExpr> for &'a BasedExpr {
     }
 }
 
+impl MulAssign<BasedExpr> for BasedExpr {
+    fn mul_assign(&mut self, mut rhs: BasedExpr) {
+        if !self.has_basis() && rhs.has_basis() {
+            std::mem::swap(self, &mut rhs);
+        }
+        match (self, rhs) {
+            (BasedExpr::Undefined(a), BasedExpr::Undefined(b)) => *a *= b,
+            (BasedExpr::Based(a, _), BasedExpr::Undefined(b)) => a.iter_mut().for_each(|a| *a *= &b),
+            (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
+            (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
+                basis_a.assert_compatible(&basis_b);
+                *a = basis_a.matrices.iter().map(|mtx| {
+                    mtx.iter().map(|(coeff, ai, bi)| {
+                        Rational::from(coeff) * &a[*ai] * &b[*bi]
+                    }).sum()
+                }).collect::<Vec<_>>();
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -646,7 +720,7 @@ mod tests {
     #[test]
     fn test_bases_list() {
         let _lock = LOCK.write();
-        let basis = Basis { exprs: vec![sqrt_expr_parse!(1), sqrt_expr_parse!(2)] };
+        let basis = Basis::new(vec![sqrt_expr_parse!(1), sqrt_expr_parse!(2)]);
         let expr = based_expr!(1 + sqrt 2);
 
         {
