@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+algebraics = "0.3.0"
 dashu-float = "0.4.3"
 dashu-int = "0.4.1"
 malachite = "0.6.1"

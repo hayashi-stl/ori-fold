@@ -9,6 +9,7 @@ use malachite::{rational::Rational, Integer};
 use malachite::base::num::arithmetic::traits::{Abs, NegAssign, Sign};
 
 mod pslq;
+mod algebraic;
 
 #[macro_export]
 macro_rules! sqrt_expr_helper {
