@@ -7,12 +7,13 @@ use std::sync::{Arc, LazyLock, Mutex};
 use malachite::base::num::basic::traits::{One, Zero};
 use malachite::{rational::Rational, Integer};
 use malachite::base::num::arithmetic::traits::{Abs, NegAssign, Sign};
-use nalgebra::{DMatrix, DVector, DVectorSlice, DVectorView};
+use nalgebra::{DMatrix, DVector, DVectorView};
 
 use crate::pslq::{checked_integer_relation, checked_integer_relation_product, IntegerRelationError};
 
 mod pslq;
 mod algebraic;
+mod rat;
 
 #[macro_export]
 macro_rules! sqrt_expr_helper {
@@ -778,30 +779,33 @@ impl<'a> Mul<&BasedExpr> for &'a BasedExpr {
     }
 }
 
-//impl DivAssign<BasedExpr> for BasedExpr {
-//    fn div_assign(&mut self, rhs: BasedExpr) {
-//        if let (None, Some(basis)) = (self.basis(), rhs.basis()) {
-//            *self = BasedExpr::based_rational(if let BasedExpr::Undefined(q) = std::mem::take(self) {q} else {unreachable!()}, basis.clone());
-//        }
-//        match (self, rhs) {
-//            (BasedExpr::Undefined(a), BasedExpr::Undefined(b)) => *a /= b,
-//            (BasedExpr::Based(a, _), BasedExpr::Undefined(b)) => a.iter_mut().for_each(|a| *a /= &b),
-//            (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
-//            (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
-//                // The dreaded division
-//                // TODO: Make this faster if necessary.
-//                basis_a.assert_compatible(&basis_b);
-//                let mut mtx = DMatrix::repeat(a.len(), a.len(), Rational::ZERO);
-//                for (row_i, row) in basis_a.matrices.iter().enumerate() {
-//                    for (coeff, a_i, b_i) in row {
-//                        mtx[(row_i, *b_i)] = coeff * &a[*a_i];
-//                    }
-//                }
-//                let solution = mtx.solve(DVector::from_iterator(a.len(), b));
-//            }
-//        }
-//    }
-//}
+impl DivAssign<BasedExpr> for BasedExpr {
+    fn div_assign(&mut self, rhs: BasedExpr) {
+        if let (None, Some(basis)) = (self.basis(), rhs.basis()) {
+            *self = BasedExpr::based_rational(if let BasedExpr::Undefined(q) = std::mem::take(self) {q} else {unreachable!()}, basis.clone());
+        }
+        match (self, rhs) {
+            (BasedExpr::Undefined(a), BasedExpr::Undefined(b)) => *a /= b,
+            (BasedExpr::Based(a, _), BasedExpr::Undefined(b)) => a.iter_mut().for_each(|a| *a /= &b),
+            (BasedExpr::Undefined(_), BasedExpr::Based(_, _)) => unreachable!(),
+            (BasedExpr::Based(a, basis_a), BasedExpr::Based(b, basis_b)) => {
+                // The dreaded division
+                // TODO: Make this faster if necessary.
+                basis_a.assert_compatible(&basis_b);
+                let mut mtx = DMatrix::repeat(a.len(), a.len(), Rational::ZERO);
+                for (row_i, row) in basis_a.matrices.iter().enumerate() {
+                    for (coeff, a_i, b_i) in row {
+                        mtx[(row_i, *b_i)] = coeff * &a[*a_i];
+                    }
+                }
+                //mtx.try_inverse_mut().unwrap();
+                //let result =
+                //    <DMatrix<Rational> as Mul<DVector<Rational>>>::mul(mtx, b);
+                //*a = mtx * b;
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
