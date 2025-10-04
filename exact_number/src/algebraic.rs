@@ -26,8 +26,8 @@ fn integer_to_algebraic(int: &Integer) -> RealAlgebraicNumber {
 }
 
 fn terms_to_algebraic(terms: &SqrtExprSum) -> RealAlgebraicNumber {
-    dbg!(terms.iter().map(|(coeff, sqrt)| sqrt.to_algebraic() * integer_to_algebraic(coeff))
-        .fold(RealAlgebraicNumber::zero(), |acc, curr| acc + curr))
+    terms.iter().map(|(coeff, sqrt)| sqrt.to_algebraic() * integer_to_algebraic(coeff))
+        .fold(RealAlgebraicNumber::zero(), |acc, curr| acc + curr)
 }
 
 impl SqrtExpr {
@@ -62,11 +62,7 @@ pub(crate) fn check_combination_product(coeffs: &[Integer], basis: &[SqrtExpr], 
             let b = factor_a.to_algebraic() * factor_b.to_algebraic();
             coeff * b
         }))
-        .fold(RealAlgebraicNumber::zero(), |acc, curr| {
-            let acc = dbg!(acc);
-            let curr = dbg!(curr);
-            dbg!(acc + curr)
-        })
+        .fold(RealAlgebraicNumber::zero(), |acc, curr| acc + curr )
         .is_zero()
 }
 

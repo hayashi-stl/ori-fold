@@ -88,11 +88,13 @@ name = "exact_number"
 version = "0.1.0"
 dependencies = [
  "algebraics",
+ "approx",
  "dashu-float",
  "dashu-int",
  "malachite",
  "nalgebra",
  "num",
+ "simba",
 ]
 
 [[package]]

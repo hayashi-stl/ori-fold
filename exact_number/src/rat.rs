@@ -2,19 +2,59 @@
 
 use std::{cmp::Ordering, fmt::Display, iter::{Product, Sum}, ops::{Add, AddAssign, Deref, DerefMut, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Shl, ShlAssign, Shr, ShrAssign, Sub, SubAssign}, str::FromStr};
 
-use malachite::{base::{named::Named, num::{arithmetic::traits::{Abs, AbsAssign, AbsDiff, AbsDiffAssign, Ceiling, CeilingAssign, CeilingLogBase, CeilingLogBase2, CeilingLogBasePowerOf2, CheckedDiv, CheckedLogBase, CheckedLogBase2, CheckedLogBasePowerOf2, CheckedRoot, CheckedSqrt, Floor, FloorAssign, FloorLogBase, FloorLogBase2, FloorLogBasePowerOf2, IsPowerOf2, NegAssign, NextPowerOf2, NextPowerOf2Assign, Pow as _, PowAssign, PowerOf2, Reciprocal, ReciprocalAssign, RoundToMultipleAssign, RoundToMultipleOfPowerOf2, RoundToMultipleOfPowerOf2Assign, Sign, Square, SquareAssign}, basic::traits::Two, comparison::traits::{EqAbs, OrdAbs, PartialOrdAbs}, conversion::{string::options::FromSciStringOptions, traits::{ConvertibleFrom, FromSciString, IsInteger, RoundingFrom, SciMantissaAndExponent, ToSci}}, logic::traits::SignificantBits}, rounding_modes::RoundingMode}, natural::conversion::primitive_int_from_natural::SignedFromNaturalError, rational::{arithmetic::traits::{Approximate, ApproximateAssign, DenominatorsInClosedInterval}, conversion::{continued_fraction::{convergents::RationalConvergents, to_continued_fraction::RationalContinuedFraction}, from_primitive_float::RationalFromPrimitiveFloatError, integer_from_rational::IntegerFromRationalError, natural_from_rational::NaturalFromRationalError, primitive_float_from_rational::FloatConversionError, primitive_int_from_rational::{SignedFromRationalError, UnsignedFromRationalError}, traits::{ContinuedFraction, Convergents}}, Rational}, Integer, Natural};
+use approx::{AbsDiffEq, RelativeEq, UlpsEq};
+use malachite::{base::{named::Named, num::{arithmetic::traits::{Abs, AbsAssign, AbsDiff, AbsDiffAssign, Ceiling, CeilingAssign, CeilingLogBase, CeilingLogBase2, CeilingLogBasePowerOf2, CheckedDiv, CheckedLogBase, CheckedLogBase2, CheckedLogBasePowerOf2, CheckedRoot, CheckedSqrt, Floor, FloorAssign, FloorLogBase, FloorLogBase2, FloorLogBasePowerOf2, IsPowerOf2, NegAssign, NextPowerOf2, NextPowerOf2Assign, Pow as _, PowAssign, PowerOf2, Reciprocal, ReciprocalAssign, RoundToMultipleAssign, RoundToMultipleOfPowerOf2, RoundToMultipleOfPowerOf2Assign, Sign, Square, SquareAssign}, basic::{floats::PrimitiveFloat, signeds::PrimitiveSigned, traits::{NegativeOne, Two}, unsigneds::PrimitiveUnsigned}, comparison::traits::{EqAbs, OrdAbs, PartialOrdAbs}, conversion::{string::options::FromSciStringOptions, traits::{ConvertibleFrom, FromSciString, IsInteger, RoundingFrom, SciMantissaAndExponent, ToSci}}, logic::traits::SignificantBits}, rational_sequences::RationalSequence, rounding_modes::RoundingMode}, natural::conversion::primitive_int_from_natural::SignedFromNaturalError, platform::{Limb, SignedLimb}, rational::{arithmetic::traits::{Approximate, ApproximateAssign, DenominatorsInClosedInterval}, conversion::{continued_fraction::{convergents::RationalConvergents, to_continued_fraction::RationalContinuedFraction}, from_primitive_float::RationalFromPrimitiveFloatError, integer_from_rational::IntegerFromRationalError, natural_from_rational::NaturalFromRationalError, primitive_float_from_rational::FloatConversionError, primitive_int_from_rational::{SignedFromRationalError, UnsignedFromRationalError}, traits::{ContinuedFraction, Convergents}}, Rational}, Integer, Natural};
 use malachite::base::num::arithmetic::traits::RoundToMultiple;
 use malachite::base::num::basic::traits::{Zero as _, One as _};
-use num::{pow::Pow, Num, One, Zero};
+use nalgebra::{ComplexField, Field, RealField, Scalar, SimdValue};
+use num::{pow::Pow, traits::{NumAssign, NumAssignRef, NumRef, RefNum}, FromPrimitive, Num, One, Signed, Zero};
+use simba::scalar::SubsetOf;
 
+/// A thin wrapper around `Rational` that implements `num_traits::Num` and
+/// `nalgebra::ComplexField` to support libraries.
+/// Not all methods in `nalgebra::ComplexField` or `nalgebra::RealField` are supported, so beware.
+/// 
+/// For extra documentation, given a `rat` value, look at `rat.0`'s methods.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Rat(pub Rational);
 
 impl Rat {
+    pub const MINUS_ONE: Rat = Rat(Rational::NEGATIVE_ONE);
     pub const ZERO: Rat = Rat(Rational::ZERO);
     pub const ONE: Rat = Rat(Rational::ONE);
     pub const TWO: Rat = Rat(Rational::TWO);
+
+    pub const fn const_from_signed(x: SignedLimb) -> Rat { Rat(Rational::const_from_signed(x)) }
+    pub const fn const_from_signeds(numerator: SignedLimb, denominator: SignedLimb) -> Rat { Rat(Rational::const_from_signeds(numerator, denominator)) }
+    pub const fn const_from_unsigned(x: Limb) -> Rat { Rat(Rational::const_from_unsigned(x)) }
+    pub const fn const_from_unsigneds(numerator: Limb, denominator: Limb) -> Rat { Rat(Rational::const_from_unsigneds(numerator, denominator)) }
+
+    pub fn from_continued_fraction(floor: Integer, xs: impl Iterator<Item = Natural>) -> Rat { Rat(Rational::from_continued_fraction(floor, xs)) }
+    pub fn from_continued_fraction_ref<'a>(floor: &Integer, xs: impl Iterator<Item = &'a Natural>) -> Rat { Rat(Rational::from_continued_fraction_ref(floor, xs)) }
+    pub fn from_digits(base: &Natural, before_point: Vec<Natural>, after_point: RationalSequence<Natural>) -> Rat { Rat(Rational::from_digits(base, before_point, after_point)) }
+    pub fn from_digits_ref(base: &Natural, before_point: &[Natural], after_point: &RationalSequence<Natural>) -> Rat { Rat(Rational::from_digits_ref(base, before_point, after_point)) }
+    pub fn from_integers(numerator: Integer, denominator: Integer) -> Rat { Rat(Rational::from_integers(numerator, denominator)) }
+    pub fn from_integers_ref(numerator: &Integer, denominator: &Integer) -> Rat { Rat(Rational::from_integers_ref(numerator, denominator)) }
+    pub fn from_naturals(numerator: Natural, denominator: Natural) -> Rat { Rat(Rational::from_naturals(numerator, denominator)) }
+    pub fn from_naturals_ref(numerator: &Natural, denominator: &Natural) -> Rat { Rat(Rational::from_naturals_ref(numerator, denominator)) }
+    pub fn from_power_of_2_digits(log_base: u64, before_point: Vec<Natural>, after_point: RationalSequence<Natural>) -> Rat { Rat(Rational::from_power_of_2_digits(log_base, before_point, after_point)) }
+    pub fn from_power_of_2_digits_ref(log_base: u64, before_point: &[Natural], after_point: &RationalSequence<Natural>) -> Rat { Rat(Rational::from_power_of_2_digits_ref(log_base, before_point, after_point)) }
+    pub fn from_sci_string_simplest(s: &str) -> Option<Rat> { Rational::from_sci_string_simplest(s).map(Rat) }
+    pub fn from_sci_string_simplest_with_options(s: &str, options: FromSciStringOptions,) -> Option<Rat> { Rational::from_sci_string_simplest_with_options(s, options).map(Rat) }
+    pub fn from_sign_and_naturals(sign: bool, numerator: Natural, denominator: Natural) -> Rat { Rat(Rational::from_sign_and_naturals(sign, numerator, denominator)) }
+    pub fn from_sign_and_naturals_ref(sign: bool, numerator: &Natural, denominator: &Natural) -> Rat { Rat(Rational::from_sign_and_naturals_ref(sign, numerator, denominator)) }
+    pub fn from_sign_and_unsigneds<T: PrimitiveUnsigned>(sign: bool, numerator: T, denominator: T) -> Rat where Natural: From<T> { Rat(Rational::from_sign_and_unsigneds(sign, numerator, denominator)) }
+    pub fn from_signeds<T: PrimitiveSigned>(numerator: T, denominator: T) -> Rat where Integer: From<T> { Rat(Rational::from_signeds(numerator, denominator)) }
+    pub fn from_unsigneds<T: PrimitiveUnsigned>(numerator: T, denominator: T) -> Rat where Natural: From<T> { Rat(Rational::from_unsigneds(numerator, denominator)) }
+    pub fn try_from_float_simplest<T: PrimitiveFloat>(x: T) -> Result<Rat, RationalFromPrimitiveFloatError> where Rational: TryFrom<T, Error = RationalFromPrimitiveFloatError> { Rational::try_from_float_simplest(x).map(Rat) }
+
+    pub fn into_numerator(self) -> Natural { self.0.into_numerator() }
+    pub fn into_denominator(self) -> Natural { self.0.into_denominator() }
+    pub fn into_numerator_and_denominator(self) -> (Natural, Natural) { self.0.into_numerator_and_denominator() }
+    pub fn into_digits(self, base: &Natural) -> (Vec<Natural>, RationalSequence<Natural>) { self.0.into_digits(base) }
+    pub fn into_power_of_2_digits(self, log_base: u64) -> (Vec<Natural>, RationalSequence<Natural>) { self.0.into_power_of_2_digits(log_base) }
+
 }
 
 impl Deref for Rat {
@@ -569,5 +609,482 @@ impl Num for Rat {
         let mut options = FromSciStringOptions::default();
         options.set_base(radix as u8);
         Rational::from_sci_string_simplest_with_options(str, options).ok_or(()).map(|r| Rat(r))
+    }
+}
+
+//pub trait NumEx: Default + PartialOrd + Num + NumRef + NumAssignRef + Scalar + NumAssign + Signed + Neg<Output = Self> {}
+//
+//impl<T> NumEx for T where T: Default + PartialOrd + Num + NumRef + NumAssignRef + Scalar + NumAssign + Signed + Neg<Output = T> {}
+
+// Can't use this shortcut; for some reason it causes an trait overflow
+//pub trait RefNumEx: RefNum<Self::Base> + Neg<Output = Self::Base> {
+//    type Base;
+//}
+//impl<'a> RefNumEx for &'a Rat { type Base = Rat; }
+//impl<'a, T> RefNumEx for &'a T where &'a T: RefNum<T> + Neg<Output = T> {
+//    type Base = T;
+//}
+
+impl SimdValue for Rat {
+    const LANES: usize = 1;
+    type Element = Rat;
+    type SimdBool = bool;
+
+    fn splat(val: Self::Element) -> Self {
+        val
+    }
+
+    fn extract(&self, _: usize) -> Self::Element {
+        self.clone()
+    }
+
+    unsafe fn extract_unchecked(&self, _: usize) -> Self::Element {
+        self.clone()
+    }
+
+    fn replace(&mut self, _: usize, val: Self::Element) {
+        *self = val;
+    }
+
+    unsafe fn replace_unchecked(&mut self, _: usize, val: Self::Element) {
+        *self = val;
+    }
+
+    fn select(self, cond: Self::SimdBool, other: Self) -> Self {
+        if cond { self } else { other }
+    }
+}
+
+impl Field for Rat {}
+
+impl Signed for Rat {
+    fn abs(&self) -> Self {
+        Rat((&self.0).abs())
+    }
+
+    fn abs_sub(&self, other: &Self) -> Self {
+        self.abs_diff(other)
+    }
+
+    fn signum(&self) -> Self {
+        match self.sign() {
+            Ordering::Less => Rat::MINUS_ONE,
+            Ordering::Equal => Rat::ZERO,
+            Ordering::Greater => Rat::ONE,
+        }
+    }
+
+    fn is_positive(&self) -> bool {
+        self.sign() == Ordering::Greater
+    }
+
+    fn is_negative(&self) -> bool {
+        self.sign() == Ordering::Less
+    }
+}
+
+impl AbsDiffEq for Rat {
+    type Epsilon = Rat;
+
+    fn default_epsilon() -> Self::Epsilon {
+        Rat::ZERO
+    }
+
+    fn abs_diff_eq(&self, other: &Self, _: Self::Epsilon) -> bool {
+        // Exact values; no need for fudgy comparisons
+        self == other
+    }
+}
+
+impl UlpsEq for Rat {
+    fn default_max_ulps() -> u32 {
+        0
+    }
+
+    fn ulps_eq(&self, other: &Self, epsilon: Self::Epsilon, _: u32) -> bool {
+        // Exact values; no need for fudgy comparisons
+        self.abs_diff_eq(other, epsilon)
+    }
+}
+
+impl RelativeEq for Rat {
+    fn default_max_relative() -> Self::Epsilon {
+        Self::ONE
+    }
+
+    fn relative_eq(&self, other: &Self, _: Self::Epsilon, _: Self::Epsilon)
+        -> bool {
+        // Exact values; no need for fudgy comparisons
+        self == other
+    }
+}
+
+impl FromPrimitive for Rat {
+    fn from_i64(n: i64) -> Option<Self> {
+        Some(n.into())
+    }
+
+    fn from_u64(n: u64) -> Option<Self> {
+        Some(n.into())
+    }
+}
+
+impl SubsetOf<Rat> for Rat {
+    fn to_superset(&self) -> Rat {
+        self.clone()
+    }
+
+    fn from_superset_unchecked(element: &Rat) -> Self {
+        element.clone()
+    }
+
+    fn is_in_subset(_: &Rat) -> bool {
+        true
+    }
+}
+
+impl SubsetOf<Rat> for f64 {
+    fn to_superset(&self) -> Rat {
+        // A necessary evil to make this compatible with nalgebra. Some methods don't *really* need ComplexField.
+        Rat::try_from(*self).unwrap_or_else(|e| panic!("{e:?}: cannot convert {self} to Rat"))
+    }
+
+    fn from_superset_unchecked(element: &Rat) -> Self {
+        element.try_into().unwrap_or_else(|e| panic!("{e:?}: cannot convert {element} to f64"))
+    }
+
+    fn from_superset(element: &Rat) -> Option<Self> {
+        element.try_into().ok()
+    }
+
+    fn is_in_subset(element: &Rat) -> bool {
+        Self::try_from(element).is_ok()
+    }
+}
+
+impl SubsetOf<Rat> for f32 {
+    fn to_superset(&self) -> Rat {
+        // A necessary evil to make this compatible with nalgebra. Some methods don't *really* need ComplexField.
+        Rat::try_from(*self).unwrap_or_else(|e| panic!("{e:?}: cannot convert {self} to Rat"))
+    }
+
+    fn from_superset_unchecked(element: &Rat) -> Self {
+        element.try_into().unwrap_or_else(|e| panic!("{e:?}: cannot convert {element} to f64"))
+    }
+
+    fn from_superset(element: &Rat) -> Option<Self> {
+        element.try_into().ok()
+    }
+
+    fn is_in_subset(element: &Rat) -> bool {
+        Self::try_from(element).is_ok()
+    }
+}
+
+impl RealField for Rat {
+    fn is_sign_positive(&self) -> bool {
+        self.is_positive()
+    }
+
+    fn is_sign_negative(&self) -> bool {
+        self.is_negative()
+    }
+
+    fn copysign(self, sign: Self) -> Self {
+        let (numerator, denominator) = self.into_numerator_and_denominator();
+        Rat::from_sign_and_naturals(!sign.is_negative(), numerator, denominator)
+    }
+
+    fn max(self, other: Self) -> Self {
+        Ord::max(self, other)
+    }
+
+    fn min(self, other: Self) -> Self {
+        Ord::min(self, other)
+    }
+
+    fn clamp(self, min: Self, max: Self) -> Self {
+        Ord::clamp(self, min, max)
+    }
+
+    fn atan2(self, other: Self) -> Self {
+        panic!("cannot take atan2 of rational numbers {self}, {other}")
+    }
+
+    fn min_value() -> Option<Self> {
+        None
+    }
+
+    fn max_value() -> Option<Self> {
+        None
+    }
+
+    // And here comes another necessary evil
+    // A bunch of irrational constants that can't be defined
+
+    fn pi() -> Self {
+        panic!("π is not rational")
+    }
+
+    fn two_pi() -> Self {
+        panic!("2π is not rational")
+    }
+
+    fn frac_pi_2() -> Self {
+        panic!("π/2 is not rational")
+    }
+
+    fn frac_pi_3() -> Self {
+        panic!("π/3 is not rational")
+    }
+
+    fn frac_pi_4() -> Self {
+        panic!("π/4 is not rational")
+    }
+
+    fn frac_pi_6() -> Self {
+        panic!("π/6 is not rational")
+    }
+
+    fn frac_pi_8() -> Self {
+        panic!("π/8 is not rational")
+    }
+
+    fn frac_1_pi() -> Self {
+        panic!("1/π is not rational")
+    }
+
+    fn frac_2_pi() -> Self {
+        panic!("2/π is not rational")
+    }
+
+    fn frac_2_sqrt_pi() -> Self {
+        panic!("2/√π is not rational")
+    }
+
+    fn e() -> Self {
+        panic!("e is not rational")
+    }
+
+    fn log2_e() -> Self {
+        panic!("log_2(e) is not rational")
+    }
+
+    fn log10_e() -> Self {
+        panic!("log_10(e) is not rational")
+    }
+
+    fn ln_2() -> Self {
+        panic!("ln(2) is not rational")
+    }
+
+    fn ln_10() -> Self {
+        panic!("ln(10) is not rational")
+    }
+}
+
+// For use in matrices
+impl ComplexField for Rat {
+    type RealField = Rat;
+
+    #[doc = r" Builds a pure-real complex number from the given value."]
+    fn from_real(re: Self::RealField) -> Self {
+        re
+    }
+
+    #[doc = r" The real part of this complex number."]
+    fn real(self) -> Self::RealField {
+        self
+    }
+
+    #[doc = r" The imaginary part of this complex number."]
+    fn imaginary(self) -> Self::RealField {
+        Rat::ZERO
+    }
+
+    #[doc = r" The modulus of this complex number."]
+    fn modulus(self) -> Self::RealField {
+        Abs::abs(self)
+    }
+
+    #[doc = r" The squared modulus of this complex number."]
+    fn modulus_squared(self) -> Self::RealField {
+        self.square()
+    }
+
+    #[doc = r" The argument of this complex number."]
+    fn argument(self) -> Self::RealField {
+        Rat::ZERO
+    }
+
+    #[doc = r" The sum of the absolute value of this complex number's real and imaginary part."]
+    fn norm1(self) -> Self::RealField {
+        Abs::abs(self)
+    }
+
+    #[doc = r" Multiplies this complex number by `factor`."]
+    fn scale(self, factor: Self::RealField) -> Self {
+        self * factor
+    }
+
+    #[doc = r" Divides this complex number by `factor`."]
+    fn unscale(self, factor: Self::RealField) -> Self {
+        self / factor
+    }
+
+    fn floor(self) -> Self {
+        Floor::floor(self).into()
+    }
+
+    fn ceil(self) -> Self {
+        Ceiling::ceiling(self).into()
+    }
+
+    fn round(self) -> Self {
+        Integer::rounding_from(self, RoundingMode::Nearest).0.into()
+    }
+
+    fn trunc(self) -> Self {
+        Integer::rounding_from(self, RoundingMode::Down).0.into()
+    }
+
+    fn fract(self) -> Self {
+        self.clone() - self.trunc()
+    }
+
+    fn mul_add(self, a: Self, b: Self) -> Self {
+        self * a + b
+    }
+
+    #[doc = r" The absolute value of this complex number: `self / self.signum()`."]
+    #[doc = r""]
+    #[doc = r" This is equivalent to `self.modulus()`."]
+    fn abs(self) -> Self::RealField {
+        Abs::abs(self)
+    }
+
+    #[doc = r" Computes (self.conjugate() * self + other.conjugate() * other).sqrt()"]
+    fn hypot(self, other: Self) -> Self::RealField {
+        (self.square() + other.square()).checked_sqrt().unwrap_or_else(|| panic!("cannot take hypothenuse: self² + other² isn't a perfect square"))
+    }
+
+    fn recip(self) -> Self {
+        self.reciprocal()
+    }
+
+    fn conjugate(self) -> Self {
+        self
+    }
+
+    fn sin(self) -> Self {
+        panic!("cannot take sin of rational number {self}")
+    }
+
+    fn cos(self) -> Self {
+        panic!("cannot take cos of rational number {self}")
+    }
+
+    fn sin_cos(self) -> (Self,Self) {
+        panic!("cannot take sin_cos of rational number {self}")
+    }
+
+    fn tan(self) -> Self {
+        panic!("cannot take tan of rational number {self}")
+    }
+
+    fn asin(self) -> Self {
+        panic!("cannot take asin of rational number {self}")
+    }
+
+    fn acos(self) -> Self {
+        panic!("cannot take acos of rational number {self}")
+    }
+
+    fn atan(self) -> Self {
+        panic!("cannot take atan of rational number {self}")
+    }
+
+    fn sinh(self) -> Self {
+        panic!("cannot take sinh of rational number {self}")
+    }
+
+    fn cosh(self) -> Self {
+        panic!("cannot take cosh of rational number {self}")
+    }
+
+    fn tanh(self) -> Self {
+        panic!("cannot take tanh of rational number {self}")
+    }
+
+    fn asinh(self) -> Self {
+        panic!("cannot take asinh of rational number {self}")
+    }
+
+    fn acosh(self) -> Self {
+        panic!("cannot take acosh of rational number {self}")
+    }
+
+    fn atanh(self) -> Self {
+        panic!("cannot take atanh of rational number {self}")
+    }
+
+    fn log(self, base: Self::RealField) -> Self {
+        self.checked_log_base(&base).unwrap_or_else(|| panic!("cannot take log_{base} of this rational number")).into()
+    }
+
+    fn log2(self) -> Self {
+        self.checked_log_base_2().unwrap_or_else(|| panic!("cannot take log_2 of this rational number")).into()
+    }
+
+    fn log10(self) -> Self {
+        self.checked_log_base(&10.into()).unwrap_or_else(|| panic!("cannot take log_10 of this rational number")).into()
+    }
+
+    fn ln(self) -> Self {
+        panic!("cannot take ln_e of rational number {self}")
+    }
+
+    fn ln_1p(self) -> Self {
+        panic!("cannot take ln_1p of rational number {self}")
+    }
+
+    fn sqrt(self) -> Self {
+        self.checked_sqrt().unwrap_or_else(|| panic!("cannot take log_10 of this rational number")).into()
+    }
+
+    fn exp(self) -> Self {
+        panic!("cannot take exp of rational number {self}")
+    }
+
+    fn exp2(self) -> Self {
+        Rat::TWO.pow((&self).try_into().unwrap_or_else(|e| panic!("{e:?} cannot take exp2 of this rational number ({self})")))
+    }
+
+    fn exp_m1(self) -> Self {
+        panic!("cannot take exp_m1 of rational number {self}")
+    }
+
+    fn powi(self, n: i32) -> Self {
+        self.pow(n as i64)
+    }
+
+    fn powf(self, n: Self::RealField) -> Self {
+        self.pow((&n).try_into().unwrap_or_else(|e| panic!("{e:?} cannot raise this rational number to the {n}-th power")))
+    }
+
+    fn powc(self, n: Self) -> Self {
+        self.powf(n)
+    }
+
+    fn cbrt(self) -> Self {
+        self.checked_root(3u64).unwrap_or_else(|| panic!("cannot take log_10 of this rational number"))
+    }
+
+    fn is_finite(&self) -> bool {
+        true
+    }
+
+    fn try_sqrt(self) -> Option<Self> {
+        self.checked_sqrt()
     }
 }
