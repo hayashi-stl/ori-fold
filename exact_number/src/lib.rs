@@ -1,15 +1,16 @@
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Display};
 use std::ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
-use malachite::base::num::basic::traits::{One, Zero};
+use malachite::base::num::basic::traits::{One, Zero as _};
 use malachite::Integer;
-use malachite::base::num::arithmetic::traits::{Abs, NegAssign, Sign};
-use nalgebra::{DMatrix, DVector, DVectorView};
-use num::{Signed, Zero as _};
+use malachite::base::num::arithmetic::traits::{Abs, NegAssign, Sign, Square};
+use nalgebra::{DMatrix, DVector, DVectorView, RealField};
+use num::{Signed, Zero};
 
+use crate::interval::{Fixed, Interval, IntervalContent};
 use crate::pslq::{checked_integer_relation, checked_integer_relation_product, IntegerRelationError};
 use crate::rat::Rat;
 
@@ -145,7 +146,7 @@ impl Debug for SqrtExpr {
 static BASES: LazyLock<Mutex<RefCell<Vec<Arc<Basis>>>>> = LazyLock::new(|| Mutex::new(RefCell::new(vec![])));
 
 /// A basis of with-rational-coefficients linearly independent numbers. The first element must be 1.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Basis {
     pub exprs: Vec<SqrtExpr>,
     /// Matrices stored sparsely, used for multiplication
@@ -153,6 +154,9 @@ pub struct Basis {
     /// we have (a*b)[i] = a * matrices[i] * b.
     /// The matrices are stored sparsely as (value, component to multiply in a, component to multiply in b)
     pub matrices: Vec<Vec<(Rat, usize, usize)>>,
+    /// Approximations for the basis elements.
+    pub float_approx: Vec<Interval<f64>>,
+    pub fixed_approx: Mutex<RefCell<Vec<Vec<Interval<Fixed>>>>>,
 }
 
 /// An error from trying to check a basis
@@ -236,7 +240,31 @@ impl Basis {
         }
 
         let matrices = Self::calc_matrices(&basis)?;
-        Ok(Self { exprs: basis, matrices })
+
+        // Use the exact interval for the first one instead of the silly fat interval that sqrt() will give
+        let approximations = std::iter::once(Interval::<f64>::from_integer(Integer::ONE, &0.0))
+            .chain(basis.iter().skip(1).cloned().map(|b| Interval::<f64>::from_sqrt_expr(b, &0.0)))
+            .collect::<Vec<_>>();
+        
+        Ok(Self { exprs: basis, matrices, float_approx: approximations, fixed_approx: Mutex::new(RefCell::new(vec![])) })
+    }
+
+    fn precision(level: usize) -> u64 {
+        64u64 << level
+    }
+
+    fn fixed_approx<'a>(exprs: &[SqrtExpr], cell: &'a mut Vec<Vec<Interval<Fixed>>>, level: usize) -> &'a [Interval<Fixed>] {
+        let mut curr = cell.len();
+        if level >= curr {
+            cell.resize_with(level + 1, || {
+                let approx = exprs.iter().cloned()
+                    .map(|b| Interval::<Fixed>::from_sqrt_expr(b, &Fixed(Integer::ZERO, Self::precision(curr))))
+                    .collect::<Vec<_>>();
+                curr += 1;
+                approx
+            });
+        }
+        &cell[level]
     }
 
     /// Panics if proven to not be a basis.
@@ -443,6 +471,22 @@ impl BasedExpr {
         }
     }
 
+    fn interval_f64(coeffs: &DVector<Rat>, basis: &Basis) -> Interval<f64> {
+        coeffs.iter().zip(basis.float_approx.iter())
+            .map(|(coeff, elem)| Interval::from_rational(coeff.clone(), &0.0) * elem)
+            .sum()
+    }
+
+    /// The precision is 64 << `precision_level`
+    fn interval_fixed(coeffs: &DVector<Rat>, basis: &Basis, precision_level: usize) -> Interval<Fixed> {
+        let precision = Basis::precision(precision_level);
+        let lock = basis.fixed_approx.lock().unwrap();
+        let mut borrow = lock.borrow_mut();
+        coeffs.iter().zip(Basis::fixed_approx(&basis.exprs, &mut borrow, precision_level).iter())
+            .map(|(coeff, elem)| Interval::from_rational(coeff.clone(), &Fixed(Integer::ZERO, precision)) * elem)
+            .sum()
+    }
+
     fn based_rational(q: Rat, basis: ArcBasis) -> Self {
         let mut coeffs = vec![Rat::ZERO; basis.exprs.len()];
         coeffs[0] = q;
@@ -511,6 +555,19 @@ impl BasedExpr {
         let (coeffs_a, basis_a) = self.to_coeffs_basis();
         let (coeffs_b, basis_b) = other.to_coeffs_basis();
         (coeffs_a, coeffs_b, ArcBasis::to_unified(basis_a, basis_b))
+    }
+}
+
+impl Zero for BasedExpr {
+    fn zero() -> Self {
+        Self::new_undefined(Rat::ZERO)
+    }
+
+    fn is_zero(&self) -> bool {
+        match self {
+            Self::Undefined(q) => q == &Rat::ZERO,
+            Self::Based(coeffs, _) => coeffs.iter().all(|c| c == &Rat::ZERO)
+        }
     }
 }
 
@@ -898,6 +955,49 @@ impl<'a> Div<&BasedExpr> for &'a BasedExpr {
     }
 }
 
+impl PartialOrd for BasedExpr {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        let diff = self - other;
+        match diff {
+            BasedExpr::Undefined(a) => a.partial_cmp(&Rat::ZERO),
+            BasedExpr::Based(a, basis) => {
+                // Easy cases
+                if a.iter().all(|a| a == &Rat::ZERO) {
+                    return Some(Ordering::Equal);
+                } if a.len() == 1 {
+                    return a[0].partial_cmp(&Rat::ZERO);
+                } else if a.len() == 2 {
+                    // The basis has to be [1, sqrt(c)] for some square-free integer c >= 2
+                    // However, it could be represented as, e.g. [1, sqrt(sqrt(4))].
+                    // Why you would do that, I don't know.
+                    if let SqrtExpr::Int(c) = &basis.exprs[1] {
+                        return (a[0].signum() * (&a[0]).square() + a[1].signum() * (&a[1]).square() * Rat::from(c)).partial_cmp(&Rat::ZERO);
+                    }
+                }
+
+                let float_approx = Self::interval_f64(&a, basis.as_ref());
+                let ordering = float_approx.cmp_zero();
+                if ordering.is_some() { return ordering; }
+
+                let mut level = 0;
+                // Increase the interval; we need separation!
+                loop {
+                    let approx = Self::interval_fixed(&a, basis.as_ref(), level);
+                    let ordering = approx.cmp_zero();
+                    if ordering.is_some() { return ordering; }
+                    level += 1;
+                }
+            }
+        }
+    }
+}
+
+impl Ord for BasedExpr {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
 //impl Signed for BasedExpr {
 //    fn abs(&self) -> Self {
 //        todo!()
@@ -1059,354 +1159,276 @@ mod tests {
         }
     }
 
+    fn add_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
+        assert_eq!(a.clone() + b.clone(), expected);
+        assert_eq!(a.clone() + &b, expected);
+        assert_eq!(&a + b.clone(), expected);
+        assert_eq!(&a + &b, expected);
+    }
+
+    fn radd_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
+        assert_eq!(b.clone() + a.clone(), expected);
+        assert_eq!(b.clone() + &a, expected);
+        assert_eq!(&b + a.clone(), expected);
+        assert_eq!(&b + &a, expected);
+    }
+
+    fn sub_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
+        assert_eq!(a.clone() - b.clone(), expected);
+        assert_eq!(a.clone() - &b, expected);
+        assert_eq!(&a - b.clone(), expected);
+        assert_eq!(&a - &b, expected);
+    }
+
+    fn rsub_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
+        assert_eq!(b.clone() - a.clone(), expected);
+        assert_eq!(b.clone() - &a, expected);
+        assert_eq!(&b - a.clone(), expected);
+        assert_eq!(&b - &a, expected);
+    }
+
+    fn mul_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
+        assert_eq!(a.clone() * b.clone(), expected);
+        assert_eq!(a.clone() * &b, expected);
+        assert_eq!(&a * b.clone(), expected);
+        assert_eq!(&a * &b, expected);
+    }
+
+    fn rmul_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
+        assert_eq!(b.clone() * a.clone(), expected);
+        assert_eq!(b.clone() * &a, expected);
+        assert_eq!(&b * a.clone(), expected);
+        assert_eq!(&b * &a, expected);
+    }
+
+    fn div_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
+        assert_eq!(a.clone() / b.clone(), expected);
+        assert_eq!(a.clone() / &b, expected);
+        assert_eq!(&a / b.clone(), expected);
+        assert_eq!(&a / &b, expected);
+    }
+
+    fn rdiv_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
+        assert_eq!(b.clone() / a.clone(), expected);
+        assert_eq!(b.clone() / &a, expected);
+        assert_eq!(&b / a.clone(), expected);
+        assert_eq!(&b / &a, expected);
+    }
+
+    fn cmp_test(a: BasedExpr, b: BasedExpr, expected: Ordering) {
+        assert_eq!(a.cmp(&b), expected);
+    }
+
+    fn rcmp_test(a: BasedExpr, b: BasedExpr, expected: Ordering) {
+        assert_eq!(b.cmp(&a), expected);
+    }
+
+    // Assuming a perfectly working Rational library and just testing BasedExpr-specific behavior
     #[test]
-    fn test_add_based_based() {
+    fn test_based_expr_add() {
         let _lock = LOCK.read();
-        let a = based_expr!(1 + sqrt 2);
-        let b = based_expr!(3 + 2 sqrt 2);
-        let expected = based_expr!(4 + 3 sqrt 2);
-        
-        let result = a.clone() + b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() + &b;
-        assert_eq!(result, expected);
-        let result = &a + b.clone();
-        assert_eq!(result, expected);
-        let result = &a + &b;
-        assert_eq!(result, expected);
+        add_test(BasedExpr::new_undefined((-7i64).into()), BasedExpr::new_undefined((-5i64).into()), BasedExpr::new_undefined((-12i64).into()));
+        add_test(BasedExpr::new_undefined(2.into()), BasedExpr::new_undefined(2.into()), BasedExpr::new_undefined(4.into()));
+
+        add_test(BasedExpr::new_undefined((-7i64).into()), based_expr!(-5), based_expr!(-12));
+        add_test(BasedExpr::new_undefined((-5i64).into()), based_expr!(1 + sqrt 2), based_expr!(-4 + sqrt 2));
+        add_test(BasedExpr::new_undefined(120.into()), based_expr!(1 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6),
+            based_expr!(121 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6));
+
+        radd_test(BasedExpr::new_undefined((-7i64).into()), based_expr!(-5), based_expr!(-12));
+        radd_test(BasedExpr::new_undefined((-5i64).into()), based_expr!(1 + sqrt 2), based_expr!(-4 + sqrt 2));
+        radd_test(BasedExpr::new_undefined(120.into()), based_expr!(1 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6),
+            based_expr!(121 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6));
+
+        add_test(based_expr!(4), based_expr!(8), based_expr!(12));
+        add_test(based_expr!(1 + sqrt 2), based_expr!(3 + 2 sqrt 2), based_expr!(4 + 3 sqrt 2));
+        add_test(based_expr!(1/2 + sqrt 2), based_expr!(3 + 2 sqrt 2), based_expr!(7/2 + 3 sqrt 2));
+        add_test(based_expr!(1 + sqrt 2 - 4 sqrt 5 + 8 sqrt 10), based_expr!(-1 + 100 sqrt 2 + 50 sqrt 5 + 7 sqrt 10),
+            based_expr!(0 + 101 sqrt 2 + 46 sqrt 5 + 15 sqrt 10));
     }
 
     #[test]
-    fn test_add_based_undefined() {
+    fn test_based_expr_sub() {
         let _lock = LOCK.read();
-        let a = based_expr!(1 + sqrt 2);
-        let b = BasedExpr::new_undefined((-5i64).into());
-        let expected = based_expr!(-4 + sqrt 2);
-        
-        let result = a.clone() + b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() + &b;
-        assert_eq!(result, expected);
-        let result = &a + b.clone();
-        assert_eq!(result, expected);
-        let result = &a + &b;
-        assert_eq!(result, expected);
-        let result = b.clone() + a.clone();
-        assert_eq!(result, expected);
-        let result = b.clone() + &a;
-        assert_eq!(result, expected);
-        let result = &b + a.clone();
-        assert_eq!(result, expected);
-        let result = &b + &a;
-        assert_eq!(result, expected);
+        sub_test(BasedExpr::new_undefined((-7i64).into()), BasedExpr::new_undefined((-5i64).into()), BasedExpr::new_undefined((-2i64).into()));
+        sub_test(BasedExpr::new_undefined(2.into()), BasedExpr::new_undefined(2.into()), BasedExpr::new_undefined(0.into()));
+
+        sub_test(BasedExpr::new_undefined((-7i64).into()), based_expr!(-5), based_expr!(-2));
+        sub_test(BasedExpr::new_undefined((-5i64).into()), based_expr!(1 + sqrt 2), based_expr!(-6 - sqrt 2));
+        sub_test(BasedExpr::new_undefined(120.into()), based_expr!(1 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6),
+            based_expr!(119 - 2 sqrt 2 - 3 sqrt 3 - 6 sqrt 6));
+
+        rsub_test(BasedExpr::new_undefined((-7i64).into()), based_expr!(-5), based_expr!(2));
+        rsub_test(BasedExpr::new_undefined((-5i64).into()), based_expr!(1 + sqrt 2), based_expr!(6 + sqrt 2));
+        rsub_test(BasedExpr::new_undefined(120.into()), based_expr!(1 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6),
+            based_expr!(-119 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6));
+
+        sub_test(based_expr!(4), based_expr!(8), based_expr!(-4));
+        sub_test(based_expr!(1 + sqrt 2), based_expr!(3 + 2 sqrt 2), based_expr!(-2 - sqrt 2));
+        sub_test(based_expr!(1/2 + sqrt 2), based_expr!(3 + 2 sqrt 2), based_expr!(-5/2 - sqrt 2));
+        sub_test(based_expr!(1 + sqrt 2 - 4 sqrt 5 + 8 sqrt 10), based_expr!(-1 + 100 sqrt 2 + 50 sqrt 5 + 7 sqrt 10),
+            based_expr!(2 - 99 sqrt 2 - 54 sqrt 5 + sqrt 10));
     }
 
     #[test]
-    fn test_add_undefined_undefined() {
+    fn test_based_expr_mul() {
         let _lock = LOCK.read();
-        let a = BasedExpr::new_undefined((-7i64).into());
-        let b = BasedExpr::new_undefined((-5i64).into());
-        let expected = BasedExpr::new_undefined((-12i64).into());
-        
-        let result = a.clone() + b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() + &b;
-        assert_eq!(result, expected);
-        let result = &a + b.clone();
-        assert_eq!(result, expected);
-        let result = &a + &b;
-        assert_eq!(result, expected);
+        mul_test(BasedExpr::new_undefined((-7i64).into()), BasedExpr::new_undefined((-5i64).into()), BasedExpr::new_undefined(35.into()));
+        mul_test(BasedExpr::new_undefined(2.into()), BasedExpr::new_undefined(2.into()), BasedExpr::new_undefined(4.into()));
+
+        mul_test(BasedExpr::new_undefined((-7i64).into()), based_expr!(-5), based_expr!(35));
+        mul_test(BasedExpr::new_undefined((-5i64).into()), based_expr!(1 + sqrt 2), based_expr!(-5 - 5 sqrt 2));
+        mul_test(BasedExpr::new_undefined(120.into()), based_expr!(1 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6),
+            based_expr!(120 + 240 sqrt 2 + 360 sqrt 3 + 720 sqrt 6));
+
+        rmul_test(BasedExpr::new_undefined((-7i64).into()), based_expr!(-5), based_expr!(35));
+        rmul_test(BasedExpr::new_undefined((-5i64).into()), based_expr!(1 + sqrt 2), based_expr!(-5 - 5 sqrt 2));
+        rmul_test(BasedExpr::new_undefined(120.into()), based_expr!(1 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6),
+            based_expr!(120 + 240 sqrt 2 + 360 sqrt 3 + 720 sqrt 6));
+
+        mul_test(based_expr!(4), based_expr!(8), based_expr!(32));
+        mul_test(based_expr!(1 + sqrt 2), based_expr!(3 + 2 sqrt 2), based_expr!(7 + 5 sqrt 2));
+        mul_test(based_expr!(1/2 + sqrt 2), based_expr!(3 + 2 sqrt 2), based_expr!(11/2 + 4 sqrt 2));
+        mul_test(based_expr!(1 + sqrt 2 - 4 sqrt 5 + 8 sqrt 10), based_expr!(-1 + 100 sqrt 2 + 50 sqrt 5 + 7 sqrt 10),
+            based_expr!(-241 + 1959 sqrt 2 + 1668 sqrt 5 - 351 sqrt 10));
     }
 
     #[test]
-    fn test_sub_based_based() {
+    fn test_based_expr_div() {
         let _lock = LOCK.read();
-        let a = based_expr!(1 - sqrt 5);
-        let b = based_expr!(6 - 2 sqrt 5);
-        let expected = based_expr!(-5 + sqrt 5);
-        
-        let result = a.clone() - b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() - &b;
-        assert_eq!(result, expected);
-        let result = &a - b.clone();
-        assert_eq!(result, expected);
-        let result = &a - &b;
-        assert_eq!(result, expected);
+        div_test(BasedExpr::new_undefined((-7i64).into()), BasedExpr::new_undefined((-5i64).into()),
+            BasedExpr::new_undefined(Rat::from_signeds(7, 5)));
+        div_test(BasedExpr::new_undefined(2.into()), BasedExpr::new_undefined(2.into()), BasedExpr::new_undefined(1.into()));
+
+        div_test(BasedExpr::new_undefined((-7i64).into()), based_expr!(-5), based_expr!(7/5));
+        div_test(BasedExpr::new_undefined((-5i64).into()), based_expr!(1 + sqrt 2), based_expr!(5 - 5 sqrt 2));
+        div_test(BasedExpr::new_undefined(120.into()), based_expr!(1 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6),
+            based_expr!(60/91 - 120/91 sqrt 2 - 180/91 sqrt 3 + 360/91 sqrt 6));
+
+        rdiv_test(BasedExpr::new_undefined((-7i64).into()), based_expr!(-5), based_expr!(5/7));
+        rdiv_test(BasedExpr::new_undefined((-5i64).into()), based_expr!(1 + sqrt 2), based_expr!(-1/5 - 1/5 sqrt 2));
+        rdiv_test(BasedExpr::new_undefined(120.into()), based_expr!(1 + 2 sqrt 2 + 3 sqrt 3 + 6 sqrt 6),
+            based_expr!(1/120 + 1/60 sqrt 2 + 1/40 sqrt 3 + 1/20 sqrt 6));
+
+        div_test(based_expr!(4), based_expr!(8), based_expr!(1/2));
+        div_test(based_expr!(1 + sqrt 2), based_expr!(3 + 2 sqrt 2), based_expr!(-1 + sqrt 2));
+        div_test(based_expr!(1/2 + sqrt 2), based_expr!(3 + 2 sqrt 2), based_expr!(-5/2 + 2 sqrt 2));
+        div_test(based_expr!(1 + sqrt 2 - 4 sqrt 5 + 8 sqrt 10), based_expr!(-1 + 100 sqrt 2 + 50 sqrt 5 + 7 sqrt 10),
+        // Kaboom!
+            based_expr!(-8551371/21774121 - 9982071/21774121 sqrt 2 + 7355940/21774121 sqrt 5 + 2437885/21774121 sqrt 10));
     }
 
     #[test]
-    fn test_sub_based_undefined() {
-        let _lock = LOCK.read();
-        let a = based_expr!(1 - sqrt 17);
-        let b = BasedExpr::new_undefined((-5i64).into());
-        let expected = based_expr!(6 - sqrt 17);
-        
-        let result = a.clone() - b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() - &b;
-        assert_eq!(result, expected);
-        let result = &a - b.clone();
-        assert_eq!(result, expected);
-        let result = &a - &b;
-        assert_eq!(result, expected);
-
-        let expected = based_expr!(-6 + sqrt 17);
-        let result = b.clone() - a.clone();
-        assert_eq!(result, expected);
-        let result = b.clone() - &a;
-        assert_eq!(result, expected);
-        let result = &b - a.clone();
-        assert_eq!(result, expected);
-        let result = &b - &a;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_sub_undefined_undefined() {
-        let _lock = LOCK.read();
-        let a = BasedExpr::new_undefined((-7i64).into());
-        let b = BasedExpr::new_undefined((-5i64).into());
-        let expected = BasedExpr::new_undefined((-2i64).into());
-        
-        let result = a.clone() - b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() - &b;
-        assert_eq!(result, expected);
-        let result = &a - b.clone();
-        assert_eq!(result, expected);
-        let result = &a - &b;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_mul_based_based() {
-        let _lock = LOCK.read();
-        let a = based_expr!(1 - sqrt 5);
-        let b = based_expr!(6 - 2 sqrt 5);
-        let expected = based_expr!(16 - 8 sqrt 5);
-        
-        let result = a.clone() * b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() * &b;
-        assert_eq!(result, expected);
-        let result = &a * b.clone();
-        assert_eq!(result, expected);
-        let result = &a * &b;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_mul_based_based_by_0() {
-        let _lock = LOCK.read();
-        let a = based_expr!(1 - sqrt 5);
-        let b = based_expr!(0 + 0 sqrt 5);
-        let expected = based_expr!(0 + 0 sqrt 5);
-        
-        let result = a.clone() * b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() * &b;
-        assert_eq!(result, expected);
-        let result = &a * b.clone();
-        assert_eq!(result, expected);
-        let result = &a * &b;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_mul_based_based_more_complicated_basis() {
-        let _lock = LOCK.read();
-        // Requires PSLQ to prove closure, at least for now.
-        let a = based_expr!(0 + 0 sqrt 2 + 1 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2));
-        let b = based_expr!(0 + 1 sqrt 2 + 0 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2));
-        let expected = based_expr!(0 + 0 sqrt 2 + 1 sqrt(2 + sqrt 2) + 1 sqrt(2 - sqrt 2));
-        
-        let result = a.clone() * b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() * &b;
-        assert_eq!(result, expected);
-        let result = &a * b.clone();
-        assert_eq!(result, expected);
-        let result = &a * &b;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_mul_based_undefined() {
-        let _lock = LOCK.read();
-        let a = based_expr!(1 - sqrt 17);
-        let b = BasedExpr::new_undefined((-5i64).into());
-        let expected = based_expr!(-5 + 5 sqrt 17);
-        
-        let result = a.clone() * b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() * &b;
-        assert_eq!(result, expected);
-        let result = &a * b.clone();
-        assert_eq!(result, expected);
-        let result = &a * &b;
-        assert_eq!(result, expected);
-        let result = b.clone() * a.clone();
-        assert_eq!(result, expected);
-        let result = b.clone() * &a;
-        assert_eq!(result, expected);
-        let result = &b * a.clone();
-        assert_eq!(result, expected);
-        let result = &b * &a;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_mul_undefined_undefined() {
-        let _lock = LOCK.read();
-        let a = BasedExpr::new_undefined((-121i64).into());
-        let b = BasedExpr::new_undefined((11i64).into());
-        let expected = BasedExpr::new_undefined((-1331i64).into());
-        
-        let result = a.clone() * b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() * &b;
-        assert_eq!(result, expected);
-        let result = &a * b.clone();
-        assert_eq!(result, expected);
-        let result = &a * &b;
-        assert_eq!(result, expected);
-    }
- 
-    #[test]
-    fn test_div_based_based() {
-        let _lock = LOCK.read();
-        let a = based_expr!(1 - sqrt 5);
-        let b = based_expr!(6 - 2 sqrt 5);
-        let expected = based_expr!(-1/4 - 1/4 sqrt 5);
-        
-        let result = a.clone() / b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() / &b;
-        assert_eq!(result, expected);
-        let result = &a / b.clone();
-        assert_eq!(result, expected);
-        let result = &a / &b;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_div_based_based_more_complicated_basis() {
-        let _lock = LOCK.read();
-        // Requires PSLQ to prove closure, at least for now.
-        let a = based_expr!(1 + 0 sqrt 2 + 0 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2));
-        let b = based_expr!(0 + 1 sqrt 2 + 1 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2));
-        let expected = based_expr!(-1 + 0 sqrt 2 + 1/2 sqrt(2 + sqrt 2) + 1/2 sqrt(2 - sqrt 2));
-        
-        let result = a.clone() / b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() / &b;
-        assert_eq!(result, expected);
-        let result = &a / b.clone();
-        assert_eq!(result, expected);
-        let result = &a / &b;
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn test_div_based_based_even_more_complicated_basis_simpler() {
+    fn test_based_expr_div_even_more_complicated_basis_simpler() {
         let _lock = LOCK.read();
         // The dreaded 5.625°. Is it even possible?!?!
-        let a = based_expr!(1 + 0 sqrt 2 + 0 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2)
-            + 0 sqrt(2 + sqrt(2 + sqrt 2)) + 0 sqrt(2 + sqrt(2 - sqrt 2)) + 0 sqrt(2 - sqrt(2 + sqrt 2)) + 0 sqrt(2 - sqrt(2 - sqrt 2)));
-        let b = based_expr!(0 + 0 sqrt 2 + 0 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2)
-            + 1 sqrt(2 + sqrt(2 + sqrt 2)) + 0 sqrt(2 + sqrt(2 - sqrt 2)) + 0 sqrt(2 - sqrt(2 + sqrt 2)) + 0 sqrt(2 - sqrt(2 - sqrt 2)));
-        let expected = based_expr!(
-            + 0
-            + 0 sqrt 2
-            + 0 sqrt(2 + sqrt 2)
-            + 0 sqrt(2 - sqrt 2)
-            + 1/2 sqrt(2 + sqrt(2 + sqrt 2))
-            - 1/2 sqrt(2 + sqrt(2 - sqrt 2))
-            - 1/2 sqrt(2 - sqrt(2 + sqrt 2))
-            + 1/2 sqrt(2 - sqrt(2 - sqrt 2))
+        div_test(
+            based_expr!(1 + 0 sqrt 2 + 0 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2)
+                + 0 sqrt(2 + sqrt(2 + sqrt 2)) + 0 sqrt(2 + sqrt(2 - sqrt 2)) + 0 sqrt(2 - sqrt(2 + sqrt 2)) + 0 sqrt(2 - sqrt(2 - sqrt 2))),
+            based_expr!(0 + 0 sqrt 2 + 0 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2)
+                + 1 sqrt(2 + sqrt(2 + sqrt 2)) + 0 sqrt(2 + sqrt(2 - sqrt 2)) + 0 sqrt(2 - sqrt(2 + sqrt 2)) + 0 sqrt(2 - sqrt(2 - sqrt 2))),
+        based_expr!(
+                + 0
+                + 0 sqrt 2
+                + 0 sqrt(2 + sqrt 2)
+                + 0 sqrt(2 - sqrt 2)
+                + 1/2 sqrt(2 + sqrt(2 + sqrt 2))
+                - 1/2 sqrt(2 + sqrt(2 - sqrt 2))
+                - 1/2 sqrt(2 - sqrt(2 + sqrt 2))
+                + 1/2 sqrt(2 - sqrt(2 - sqrt 2))
+            )
         );
-        
-        let result = a.clone() / b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() / &b;
-        assert_eq!(result, expected);
-        let result = &a / b.clone();
-        assert_eq!(result, expected);
-        let result = &a / &b;
-        assert_eq!(result, expected);
     }
 
     #[test]
-    fn test_div_based_based_even_more_complicated_basis() {
+    fn test_based_expr_div_even_more_complicated_basis() {
         let _lock = LOCK.read();
         // The dreaded 5.625°. Is it even possible?!?!
-        let a = based_expr!(4 + 0 sqrt 2 + 0 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2)
-            + 0 sqrt(2 + sqrt(2 + sqrt 2)) + 0 sqrt(2 + sqrt(2 - sqrt 2)) + 0 sqrt(2 - sqrt(2 + sqrt 2)) + 0 sqrt(2 - sqrt(2 - sqrt 2)));
-        let b = based_expr!(0 + 1 sqrt 2 + 2 sqrt(2 + sqrt 2) + 3 sqrt(2 - sqrt 2)
-            + 4 sqrt(2 + sqrt(2 + sqrt 2)) + 5 sqrt(2 + sqrt(2 - sqrt 2)) + 6 sqrt(2 - sqrt(2 + sqrt 2)) + 7 sqrt(2 - sqrt(2 - sqrt 2)));
-        let expected = based_expr!(
-            - 7719012/6424543
-            - 5185348/6424543 sqrt 2
-            + 7011758/6424543 sqrt(2 + sqrt 2)
-            + 2347666/6424543 sqrt(2 - sqrt 2)
-            + 1738972/6424543 sqrt(2 + sqrt(2 + sqrt 2))
-            - 4398496/6424543 sqrt(2 + sqrt(2 - sqrt 2))
-            - 5442656/6424543 sqrt(2 - sqrt(2 + sqrt 2))
-            + 6380064/6424543 sqrt(2 - sqrt(2 - sqrt 2))
+        div_test(
+            based_expr!(4 + 0 sqrt 2 + 0 sqrt(2 + sqrt 2) + 0 sqrt(2 - sqrt 2)
+                + 0 sqrt(2 + sqrt(2 + sqrt 2)) + 0 sqrt(2 + sqrt(2 - sqrt 2)) + 0 sqrt(2 - sqrt(2 + sqrt 2)) + 0 sqrt(2 - sqrt(2 - sqrt 2))),
+            based_expr!(0 + 1 sqrt 2 + 2 sqrt(2 + sqrt 2) + 3 sqrt(2 - sqrt 2)
+                + 4 sqrt(2 + sqrt(2 + sqrt 2)) + 5 sqrt(2 + sqrt(2 - sqrt 2)) + 6 sqrt(2 - sqrt(2 + sqrt 2)) + 7 sqrt(2 - sqrt(2 - sqrt 2))),
+            based_expr!(
+                - 7719012/6424543
+                - 5185348/6424543 sqrt 2
+                + 7011758/6424543 sqrt(2 + sqrt 2)
+                + 2347666/6424543 sqrt(2 - sqrt 2)
+                + 1738972/6424543 sqrt(2 + sqrt(2 + sqrt 2))
+                - 4398496/6424543 sqrt(2 + sqrt(2 - sqrt 2))
+                - 5442656/6424543 sqrt(2 - sqrt(2 + sqrt 2))
+                + 6380064/6424543 sqrt(2 - sqrt(2 - sqrt 2))
+            )
         );
-        
-        let result = a.clone() / b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() / &b;
-        assert_eq!(result, expected);
-        let result = &a / b.clone();
-        assert_eq!(result, expected);
-        let result = &a / &b;
-        assert_eq!(result, expected);
     }
 
     #[test]
-    fn test_div_based_undefined() {
+    fn test_based_expr_cmp() {
         let _lock = LOCK.read();
-        let a = based_expr!(2 - sqrt 17);
-        let b = BasedExpr::new_undefined((5i64).into());
-        let expected = based_expr!(2/5 - 1/5 sqrt 17);
-        
-        let result = a.clone() / b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() / &b;
-        assert_eq!(result, expected);
-        let result = &a / b.clone();
-        assert_eq!(result, expected);
-        let result = &a / &b;
-        assert_eq!(result, expected);
 
-        let expected = based_expr!(-10/13 - 5/13 sqrt 17);
-        let result = b.clone() / a.clone();
-        assert_eq!(result, expected);
-        let result = b.clone() / &a;
-        assert_eq!(result, expected);
-        let result = &b / a.clone();
-        assert_eq!(result, expected);
-        let result = &b / &a;
-        assert_eq!(result, expected);
+        cmp_test(BasedExpr::new_undefined((-7i64).into()), BasedExpr::new_undefined((-5i64).into()), Ordering::Less);
+        cmp_test(BasedExpr::new_undefined(4.into()), BasedExpr::new_undefined(0.into()), Ordering::Greater);
+        cmp_test(BasedExpr::new_undefined(1.into()), BasedExpr::new_undefined(1.into()), Ordering::Equal);
+
+        cmp_test(BasedExpr::new_undefined(7.into()), based_expr!(0 + 5 sqrt 2), Ordering::Less);
+        cmp_test(BasedExpr::new_undefined(6.into()), based_expr!(6), Ordering::Equal);
+        cmp_test(BasedExpr::new_undefined(6.into()), based_expr!(6 + 0 sqrt 2), Ordering::Equal);
+
+        rcmp_test(BasedExpr::new_undefined(7.into()), based_expr!(0 + 5 sqrt 2), Ordering::Greater);
+        rcmp_test(BasedExpr::new_undefined(6.into()), based_expr!(6), Ordering::Equal);
+        rcmp_test(BasedExpr::new_undefined(6.into()), based_expr!(6 + 0 sqrt 2), Ordering::Equal);
+
+        cmp_test(based_expr!(1 + 2 sqrt 3 - 5 sqrt 5 + 0 sqrt 15), based_expr!(1 + 2 sqrt 3 - 5 sqrt 5 + 0 sqrt 15), Ordering::Equal);
+        cmp_test(based_expr!(3), based_expr!(5/2), Ordering::Greater);
+        cmp_test(based_expr!(5/2), based_expr!(3), Ordering::Less);
+        cmp_test(based_expr!(4), based_expr!(4), Ordering::Equal);
+        cmp_test(based_expr!(2 + sqrt 2), based_expr!(0 + 0 sqrt 2), Ordering::Greater);
+        cmp_test(based_expr!(2 + 2 sqrt 2), based_expr!(0 + 0 sqrt 2), Ordering::Greater);
+        cmp_test(based_expr!(2 - sqrt 2), based_expr!(0 + 0 sqrt 2), Ordering::Greater);
+        cmp_test(based_expr!(2 - 2 sqrt 2), based_expr!(0 + 0 sqrt 2), Ordering::Less);
+        cmp_test(based_expr!(-2 + sqrt 2), based_expr!(0 + 0 sqrt 2), Ordering::Less);
+        cmp_test(based_expr!(-2 + 2 sqrt 2), based_expr!(0 + 0 sqrt 2), Ordering::Greater);
+        cmp_test(based_expr!(-2 - sqrt 2), based_expr!(0 + 0 sqrt 2), Ordering::Less);
+        cmp_test(based_expr!(-2 - 2 sqrt 2), based_expr!(0 + 0 sqrt 2), Ordering::Less);
+        // Nice easily separable cases
+        cmp_test(based_expr!( 16 + 11 sqrt 2 + 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
+        cmp_test(based_expr!( 16 + 11 sqrt 2 + 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
+        cmp_test(based_expr!( 16 + 11 sqrt 2 - 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
+        cmp_test(based_expr!( 16 + 11 sqrt 2 - 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
+        cmp_test(based_expr!( 16 - 11 sqrt 2 + 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
+        cmp_test(based_expr!( 16 - 11 sqrt 2 + 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
+        cmp_test(based_expr!( 16 - 11 sqrt 2 - 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
+        cmp_test(based_expr!( 16 - 11 sqrt 2 - 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+        cmp_test(based_expr!(-16 + 11 sqrt 2 + 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
+        cmp_test(based_expr!(-16 + 11 sqrt 2 + 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+        cmp_test(based_expr!(-16 + 11 sqrt 2 - 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+        cmp_test(based_expr!(-16 + 11 sqrt 2 - 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+        cmp_test(based_expr!(-16 - 11 sqrt 2 + 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+        cmp_test(based_expr!(-16 - 11 sqrt 2 + 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+        cmp_test(based_expr!(-16 - 11 sqrt 2 - 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+        cmp_test(based_expr!(-16 - 11 sqrt 2 - 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
     }
 
     #[test]
-    fn test_div_undefined_undefined() {
+    fn test_based_expr_cmp_hard_to_separate() {
         let _lock = LOCK.read();
-        let a = BasedExpr::new_undefined((-121i64).into());
-        let b = BasedExpr::new_undefined((11i64).into());
-        let expected = BasedExpr::new_undefined(Rat::from_signeds(-121, 11));
-        
-        let result = a.clone() / b.clone();
-        assert_eq!(result, expected);
-        let result = a.clone() / &b;
-        assert_eq!(result, expected);
-        let result = &a / b.clone();
-        assert_eq!(result, expected);
-        let result = &a / &b;
-        assert_eq!(result, expected);
+        // Requires level 0 (64 bits) precision
+        let mut expr = based_expr!(1 + 0 sqrt 2 + 0 sqrt 5 - 364585791794594742/1152921504606846976 sqrt 10);
+        cmp_test(expr.clone(), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
+        cmp_test(-expr, based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+    }
+
+    #[test]
+    fn test_based_expr_cmp_tiny_rational() {
+        let _lock = LOCK.read();
+        // A devilish case: requires quite a lot of precision with fixed point
+        let mut expr = based_expr!(1 / 18446744073709551615 + 0 sqrt 2 + 0 sqrt 3 + 0 sqrt 6);
+        expr = &expr * &expr; // 128
+        expr = &expr * &expr; // 256
+        expr = &expr * &expr; // 512
+        expr = &expr * &expr; // 1024
+        expr = &expr * &expr; // 2048. Now it's too small for a f64.
+        cmp_test(expr.clone(), based_expr!(0 + 0 sqrt 2 + 0 sqrt 3 + 0 sqrt 6), Ordering::Greater);
+        cmp_test(-expr, based_expr!(0 + 0 sqrt 2 + 0 sqrt 3 + 0 sqrt 6), Ordering::Less);
     }
 }
