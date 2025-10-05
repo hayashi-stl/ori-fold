@@ -1,12 +1,13 @@
 use std::cell::{RefCell, RefMut};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Display};
+use std::hash::Hash;
 use std::ops::{Add, AddAssign, Deref, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use malachite::base::num::basic::traits::{One, Zero as _};
 use malachite::Integer;
-use malachite::base::num::arithmetic::traits::{Abs, NegAssign, Sign, Square};
+use malachite::base::num::arithmetic::traits::{Abs, Ceiling, Floor, NegAssign, Sign, Square};
 use nalgebra::{DMatrix, DVector, DVectorView, RealField};
 use num::{Signed, Zero};
 
@@ -487,6 +488,24 @@ impl BasedExpr {
             .sum()
     }
 
+    // impl for<T: IntervalContent> Fn(Interval<T>) -> Option<U> is not allowed
+    fn narrow_down<U>(coeffs: &DVector<Rat>, basis: &Basis,
+        result_fn_f64: impl FnOnce(Interval<f64>) -> Option<U>, mut result_fn_fixed: impl FnMut(Interval<Fixed>) -> Option<U>) -> U
+    {
+        let float_approx = Self::interval_f64(&coeffs, basis);
+        let result = result_fn_f64(float_approx);
+        if let Some(result) = result { return result };
+
+        let mut level = 0;
+        // Increase the interval; we need separation!
+        loop {
+            let approx = Self::interval_fixed(&coeffs, basis, level);
+            let result = result_fn_fixed(approx);
+            if let Some(result) = result { return result };
+            level += 1;
+        }
+    }
+
     fn based_rational(q: Rat, basis: ArcBasis) -> Self {
         let mut coeffs = vec![Rat::ZERO; basis.exprs.len()];
         coeffs[0] = q;
@@ -504,6 +523,44 @@ impl BasedExpr {
         match self {
             Self::Undefined(_) => None,
             Self::Based(_, basis) => Some(basis)
+        }
+    }
+
+    /// Gets the floor of this expression.
+    pub fn floor(&self) -> Self {
+        match self {
+            BasedExpr::Undefined(a) => BasedExpr::Undefined(a.floor().into()),
+            BasedExpr::Based(a, basis) => {
+                let mut coeffs = DVector::repeat(a.len(), Rat::ZERO);
+
+                coeffs[0] = if a.iter().skip(1).all(|a| a == &Rat::ZERO) {
+                    (&a[0]).floor().into()
+                } else {
+                    // Not an integer
+                    Self::narrow_down(&a, &basis, |k| k.definite_floor(), |k| k.definite_floor()).into()
+                };
+                
+                BasedExpr::Based(coeffs, basis.clone())
+            }
+        }
+    }
+
+    /// Gets the ceiling of this expression.
+    pub fn ceiling(&self) -> Self {
+        match self {
+            BasedExpr::Undefined(a) => BasedExpr::Undefined(a.ceiling().into()),
+            BasedExpr::Based(a, basis) => {
+                let mut coeffs = DVector::repeat(a.len(), Rat::ZERO);
+
+                coeffs[0] = if a.iter().skip(1).all(|a| a == &Rat::ZERO) {
+                    (&a[0]).ceiling().into()
+                } else {
+                    // Not an integer
+                    Self::narrow_down(&a, &basis, |k| k.definite_ceiling(), |k| k.definite_ceiling()).into()
+                };
+                
+                BasedExpr::Based(coeffs, basis.clone())
+            }
         }
     }
 
@@ -611,6 +668,16 @@ impl PartialEq for BasedExpr {
 }
 
 impl Eq for BasedExpr {}
+
+impl Hash for BasedExpr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Self::Undefined(q) => q.hash(state),
+            Self::Based(coeffs, _) => coeffs.hash(state)
+        }
+    }
+}
 
 impl AddAssign<BasedExpr> for BasedExpr {
     fn add_assign(&mut self, mut rhs: BasedExpr) {
@@ -975,18 +1042,7 @@ impl PartialOrd for BasedExpr {
                     }
                 }
 
-                let float_approx = Self::interval_f64(&a, basis.as_ref());
-                let ordering = float_approx.cmp_zero();
-                if ordering.is_some() { return ordering; }
-
-                let mut level = 0;
-                // Increase the interval; we need separation!
-                loop {
-                    let approx = Self::interval_fixed(&a, basis.as_ref(), level);
-                    let ordering = approx.cmp_zero();
-                    if ordering.is_some() { return ordering; }
-                    level += 1;
-                }
+                Some(Self::narrow_down(&a, &basis, |k| k.cmp_zero(), |k| k.cmp_zero()))
             }
         }
     }
@@ -1407,6 +1463,7 @@ mod tests {
         cmp_test(based_expr!(-16 - 11 sqrt 2 + 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
         cmp_test(based_expr!(-16 - 11 sqrt 2 - 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
         cmp_test(based_expr!(-16 - 11 sqrt 2 - 7 sqrt 5 - 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+        cmp_test(based_expr!( 16 + 11 sqrt 2 + 7 sqrt 5 + 5 sqrt 10), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
     }
 
     #[test]
@@ -1416,6 +1473,19 @@ mod tests {
         let mut expr = based_expr!(1 + 0 sqrt 2 + 0 sqrt 5 - 364585791794594742/1152921504606846976 sqrt 10);
         cmp_test(expr.clone(), based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Greater);
         cmp_test(-expr, based_expr!(0 + 0 sqrt 2 + 0 sqrt 5 + 0 sqrt 10), Ordering::Less);
+    }
+
+    #[test]
+    fn test_based_expr_cmp_huge_rational() {
+        let _lock = LOCK.read();
+        let mut expr = based_expr!(18446744073709551615 + 0 sqrt 2 + 0 sqrt 3 + 0 sqrt 6);
+        expr = &expr * &expr; // 128
+        expr = &expr * &expr; // 256
+        expr = &expr * &expr; // 512
+        expr = &expr * &expr; // 1024
+        expr = &expr * &expr; // 2048. Now it's too big for a f64.
+        cmp_test(expr.clone(), based_expr!(0 + 0 sqrt 2 + 0 sqrt 3 + 0 sqrt 6), Ordering::Greater);
+        cmp_test(-expr, based_expr!(0 + 0 sqrt 2 + 0 sqrt 3 + 0 sqrt 6), Ordering::Less);
     }
 
     #[test]

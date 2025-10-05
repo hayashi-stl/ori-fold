@@ -63,6 +63,26 @@ impl<T: IntervalContent> Interval<T> {
         }
     }
 
+    /// Floors this interval to the integer.
+    fn floor(self) -> Option<[Integer; 2]> {
+        self.bounds.and_then(|[a, b]| a.into_integer_down().zip(b.into_integer_down()).map(|(a, b)| [a, b]))
+    }
+
+    /// Gets the one true floor of this interval, or None if there isn't a unique one.
+    pub fn definite_floor(self) -> Option<Integer> {
+        self.floor().and_then(|[a, b]| if a == b { Some(a) } else { None })
+    }
+
+    /// Ceilings this interval to the integer.
+    fn ceiling(self) -> Option<[Integer; 2]> {
+        self.bounds.and_then(|[a, b]| a.into_integer_up().zip(b.into_integer_up()).map(|(a, b)| [a, b]))
+    }
+
+    /// Gets the one true ceiling of this interval, or None if there isn't a unique one.
+    pub fn definite_ceiling(self) -> Option<Integer> {
+        self.ceiling().and_then(|[a, b]| if a == b { Some(a) } else { None })
+    }
+
     // Contains a value that is less than 0
     fn maybe_less_than_zero(&self) -> bool {
         match &self.bounds {
@@ -520,6 +540,8 @@ impl<T: IntervalContent> From<[T; 2]> for Interval<T> {
 pub trait IntervalContent: Clone {
     fn from_integer_down(int: Integer, context: &Self) -> Self;
     fn from_integer_up(int: Integer, context: &Self) -> Self;
+    fn into_integer_down(self) -> Option<Integer>;
+    fn into_integer_up(self) -> Option<Integer>;
 
     fn add_down_vv(self, rhs: Self) -> Self;
     fn add_down_vr(self, rhs: &Self) -> Self;
@@ -589,6 +611,8 @@ pub trait IntervalContent: Clone {
 impl IntervalContent for f64 {
     fn from_integer_down(int: Integer, _context: &Self) -> Self { f64::rounding_from(&int, RoundingMode::Floor).0 }
     fn from_integer_up  (int: Integer, _context: &Self) -> Self { f64::rounding_from(&int, RoundingMode::Ceiling).0 }
+    fn into_integer_down(self) -> Option<Integer> { if self.is_infinite() { None } else { Some(Integer::rounding_from(self, RoundingMode::Floor)  .0) } }
+    fn into_integer_up  (self) -> Option<Integer> { if self.is_infinite() { None } else { Some(Integer::rounding_from(self, RoundingMode::Ceiling).0) } }
 
     // Prioritizing speed over bound tightness here.
     // It's probably rare that the difference will matter.
@@ -699,6 +723,8 @@ impl Ord for Fixed {
 impl IntervalContent for Fixed {
     fn from_integer_down(int: Integer, context: &Self) -> Self { Fixed(int << context.1, context.1) }
     fn from_integer_up  (int: Integer, context: &Self) -> Self { Self::from_integer_down(int, context) }
+    fn into_integer_down(self) -> Option<Integer> { Some(self.0 >> self.1) }
+    fn into_integer_up  (self) -> Option<Integer> { Some(self.0.shr_round(self.1, RoundingMode::Ceiling).0) }
 
     fn add_down_vv( self, rhs:  Self) -> Self { assert_eq!(self.1, rhs.1); Fixed( self.0 +  rhs.0, self.1) }
     fn add_down_vr( self, rhs: &Self) -> Self { assert_eq!(self.1, rhs.1); Fixed( self.0 + &rhs.0, self.1) }
