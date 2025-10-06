@@ -15,7 +15,7 @@ use num::Zero;
 use num::{bigint::Sign, BigInt, BigUint};
 use num::traits::Pow;
 
-use crate::{SqrtExpr, SqrtExprSum};
+use crate::basis::{SqrtExpr, SqrtExprSum};
 
 fn integer_to_algebraic(int: &Integer) -> RealAlgebraicNumber {
     let words = int.unsigned_abs_ref().limbs()

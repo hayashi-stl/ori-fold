@@ -2,10 +2,10 @@
 
 use std::{cmp::Ordering, fmt::{Debug, Display}, iter::Sum, ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}};
 
-use malachite::{base::{num::{arithmetic::traits::{Abs, AbsDiff, CeilingSqrt, DivRound, FloorSqrt, ShrRound, Sign}, basic::traits::Zero, conversion::traits::RoundingFrom}, rounding_modes::RoundingMode}, Integer, Natural};
+use malachite::{base::{num::{arithmetic::traits::{Abs, AbsDiff, CeilingSqrt, DivRound, FloorLogBase2, FloorSqrt, ShrRound, Sign}, basic::traits::Zero, conversion::traits::{RoundingFrom, WrappingFrom}, logic::traits::BitAccess}, rounding_modes::RoundingMode}, Integer, Natural};
 use num::{Signed, Zero as _};
 
-use crate::{rat::Rat, SqrtExpr};
+use crate::{rat::Rat, basis::SqrtExpr};
 
 /// Closed conservative interval between two real numbers.
 /// 
@@ -63,24 +63,14 @@ impl<T: IntervalContent> Interval<T> {
         }
     }
 
-    /// Floors this interval to the integer.
-    fn floor(self) -> Option<[Integer; 2]> {
-        self.bounds.and_then(|[a, b]| a.into_integer_down().zip(b.into_integer_down()).map(|(a, b)| [a, b]))
+    /// Rounds this interval to the integer.
+    fn round(self, mode: RoundingMode) -> Option<[Integer; 2]> {
+        self.bounds.and_then(|[a, b]| a.into_integer(mode).zip(b.into_integer(mode)).map(|(a, b)| [a, b]))
     }
 
-    /// Gets the one true floor of this interval, or None if there isn't a unique one.
-    pub fn definite_floor(self) -> Option<Integer> {
-        self.floor().and_then(|[a, b]| if a == b { Some(a) } else { None })
-    }
-
-    /// Ceilings this interval to the integer.
-    fn ceiling(self) -> Option<[Integer; 2]> {
-        self.bounds.and_then(|[a, b]| a.into_integer_up().zip(b.into_integer_up()).map(|(a, b)| [a, b]))
-    }
-
-    /// Gets the one true ceiling of this interval, or None if there isn't a unique one.
-    pub fn definite_ceiling(self) -> Option<Integer> {
-        self.ceiling().and_then(|[a, b]| if a == b { Some(a) } else { None })
+    /// Gets the one true round of this interval, or None if there isn't a unique one.
+    pub fn definite_round(self, mode: RoundingMode) -> Option<Integer> {
+        self.round(mode).and_then(|[a, b]| if a == b { Some(a) } else { None })
     }
 
     // Contains a value that is less than 0
@@ -130,6 +120,18 @@ impl<T: IntervalContent> Interval<T> {
 impl Interval<f64> {
     /// The entire f64 space (except infinities).
     pub const ENTIRE: Interval<f64> = Interval { bounds: Some([f64::NEG_INFINITY, f64::INFINITY]), maybe_invalid: false };
+}
+
+impl Interval<Fixed> {
+    /// Rounds this interval to the f64, halfway to even
+    fn round_into_f64(self, mode: RoundingMode) -> Option<[f64; 2]> {
+        self.bounds.map(|[a, b]| [a.round_into_f64(mode), b.round_into_f64(mode)])
+    }
+
+    /// Gets the one true round of this interval to the f64, or None if there isn't a unique one.
+    pub fn definite_round_into_f64(self, mode: RoundingMode) -> Option<f64> {
+        self.round_into_f64(mode).and_then(|[a, b]| if a == b { Some(a) } else { None })
+    }
 }
 
 impl<T: IntervalContent> AddAssign<Interval<T>> for Interval<T> {
@@ -540,8 +542,7 @@ impl<T: IntervalContent> From<[T; 2]> for Interval<T> {
 pub trait IntervalContent: Clone {
     fn from_integer_down(int: Integer, context: &Self) -> Self;
     fn from_integer_up(int: Integer, context: &Self) -> Self;
-    fn into_integer_down(self) -> Option<Integer>;
-    fn into_integer_up(self) -> Option<Integer>;
+    fn into_integer(self, mode: RoundingMode) -> Option<Integer>;
 
     fn add_down_vv(self, rhs: Self) -> Self;
     fn add_down_vr(self, rhs: &Self) -> Self;
@@ -611,8 +612,7 @@ pub trait IntervalContent: Clone {
 impl IntervalContent for f64 {
     fn from_integer_down(int: Integer, _context: &Self) -> Self { f64::rounding_from(&int, RoundingMode::Floor).0 }
     fn from_integer_up  (int: Integer, _context: &Self) -> Self { f64::rounding_from(&int, RoundingMode::Ceiling).0 }
-    fn into_integer_down(self) -> Option<Integer> { if self.is_infinite() { None } else { Some(Integer::rounding_from(self, RoundingMode::Floor)  .0) } }
-    fn into_integer_up  (self) -> Option<Integer> { if self.is_infinite() { None } else { Some(Integer::rounding_from(self, RoundingMode::Ceiling).0) } }
+    fn into_integer(self, mode: RoundingMode) -> Option<Integer> { if self.is_infinite() { None } else { Some(Integer::rounding_from(self, mode).0) } }
 
     // Prioritizing speed over bound tightness here.
     // It's probably rare that the difference will matter.
@@ -697,6 +697,51 @@ fn f64_up(x: f64) -> f64 {
 #[derive(Clone, Debug)]
 pub struct Fixed(pub Integer, pub u64);
 
+impl Fixed {
+    /// Rounds to nearest; ties to even
+    fn round_into_f64(self, mode: RoundingMode) -> f64 {
+        // Gotta be fast, so not going through Rational
+        let sign = if self.0.sign() == Ordering::Less { 1 } else { 0 };
+        let nat = Natural::try_from(self.0.abs()).unwrap();
+        if nat == Natural::ZERO {
+            // Zero
+            return 0.0;
+        }
+
+        let mut shift = nat.floor_log_base_2() as i64 - (f64::MANTISSA_DIGITS as i64 - 1);
+        let mut bits = (&nat).shr_round(shift, mode).0;
+        println!("nat: 0x{:x}, shift: {}, bits: 0x{:x}", nat, shift, bits);
+        if bits.floor_log_base_2() == f64::MANTISSA_DIGITS as u64 {
+            // Sometimes this happens because of rounding
+            shift += 1;
+            bits >>= 1; // This won't round up, so it's safe
+        }
+        let exponent = -(self.1 as i64) + shift + (f64::MANTISSA_DIGITS as i64 - 1);
+        println!("exp: {}", exponent);
+        if exponent >= f64::MAX_EXP as i64 {
+            // Infinities
+            return (sign * -2 + 1) as f64 * f64::INFINITY;
+        } else if exponent < f64::MIN_EXP as i64 - 1 {
+
+            // Subnormals. Oh no.
+            let subnormal_shift = f64::MIN_EXP as i64 - 1 - exponent as i64 + shift;
+            bits = (&nat).shr_round(subnormal_shift, mode).0;
+            if bits == Natural::ZERO {
+                return 0.0;
+            } else if bits.floor_log_base_2() < (f64::MANTISSA_DIGITS as u64 - 1) {
+                let repr = (sign as u64) << 63 | bits.into_limbs_asc()[0];
+                return f64::from_bits(repr);
+            }
+            // Sometimes this happens because of rounding. The number is no longer subnormal.
+        }
+
+        // Nice normal numbers!
+        bits.clear_bit(f64::MANTISSA_DIGITS as u64 - 1);
+        let repr = (sign as u64) << 63 | ((exponent + 1023) as u64) << (f64::MANTISSA_DIGITS - 1) | u64::wrapping_from(&bits);
+        f64::from_bits(repr)
+    }
+}
+
 impl PartialEq for Fixed {
     fn eq(&self, other: &Self) -> bool {
         assert_eq!(self.1, other.1);
@@ -723,8 +768,7 @@ impl Ord for Fixed {
 impl IntervalContent for Fixed {
     fn from_integer_down(int: Integer, context: &Self) -> Self { Fixed(int << context.1, context.1) }
     fn from_integer_up  (int: Integer, context: &Self) -> Self { Self::from_integer_down(int, context) }
-    fn into_integer_down(self) -> Option<Integer> { Some(self.0 >> self.1) }
-    fn into_integer_up  (self) -> Option<Integer> { Some(self.0.shr_round(self.1, RoundingMode::Ceiling).0) }
+    fn into_integer(self, mode: RoundingMode) -> Option<Integer> { Some(self.0.shr_round(self.1, mode).0) }
 
     fn add_down_vv( self, rhs:  Self) -> Self { assert_eq!(self.1, rhs.1); Fixed( self.0 +  rhs.0, self.1) }
     fn add_down_vr( self, rhs: &Self) -> Self { assert_eq!(self.1, rhs.1); Fixed( self.0 + &rhs.0, self.1) }
@@ -797,6 +841,8 @@ impl IntervalContent for Fixed {
 mod test {
     use std::cmp::Ordering;
 
+    use malachite::{base::rounding_modes::RoundingMode, Integer};
+
     use crate::interval::{Fixed, Interval, IntervalContent};
 
     fn add_test<T: IntervalContent + Clone + PartialEq + std::fmt::Debug>(a: Interval<T>, b: Interval<T>, expected: Interval<T>) {
@@ -840,8 +886,16 @@ mod test {
         assert_eq!(a.cmp_zero(), expected);
     }
 
+    fn round_to_f64_test(a: Fixed, expected: f64) {
+        assert_eq!(a.round_into_f64(RoundingMode::Nearest), expected);
+    }
+
     fn n2i(a: f64, b: f64) -> Interval<f64> {
         Interval::new([a, b])
+    }
+
+    fn i2f(a: impl Into<Integer>, prec: u64) -> Fixed {
+        Fixed(a.into(), prec)
     }
 
     fn i2i(a: i64, b: i64, prec: u64) -> Interval<Fixed> {
@@ -2228,5 +2282,145 @@ mod test {
         cmp_zero_test::<f64>(n2i(0.0, 2.0), None);
         cmp_zero_test::<f64>(n2i(1.0, 2.0), Some(Ordering::Greater));
         cmp_zero_test::<f64>(n2i(0.0, 0.0), Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn test_fixed_round_to_f64() {
+        // Zero
+        round_to_f64_test(i2f(0i64, 0), 0.0);
+        round_to_f64_test(i2f(0i64, 52), 0.0);
+        round_to_f64_test(i2f(0i64, 100), 0.0);
+
+        // Nice happy numbers
+        round_to_f64_test(i2f(1i64, 0), 1.0);
+        round_to_f64_test(i2f(1i64 << 52, 52), 1.0);
+        round_to_f64_test(i2f(1i64 << 60, 60), 1.0);
+        round_to_f64_test(i2f(Integer::from(1) << 1000, 1000), 1.0);
+        round_to_f64_test(i2f(-1i64, 0), -1.0);
+        round_to_f64_test(i2f(-1i64 << 52, 52), -1.0);
+        round_to_f64_test(i2f(-1i64 << 60, 60), -1.0);
+        round_to_f64_test(i2f(Integer::from(-1) << 1000, 1000), -1.0);
+        round_to_f64_test(i2f(15i64, 0), 15.0);
+        round_to_f64_test(i2f(15i64 << 52, 52), 15.0);
+        round_to_f64_test(i2f(15i64 << 59, 59), 15.0);
+        round_to_f64_test(i2f(Integer::from(15) << 1000, 1000), 15.0);
+        round_to_f64_test(i2f(-15i64, 0), -15.0);
+        round_to_f64_test(i2f(-15i64 << 52, 52), -15.0);
+        round_to_f64_test(i2f(-15i64 << 59, 59), -15.0);
+        round_to_f64_test(i2f(Integer::from(-15) << 1000, 1000), -15.0);
+
+        // Nice happy fractions
+        round_to_f64_test(i2f(1i64, 2), 0.25);
+        round_to_f64_test(i2f(1i64 << 50, 52), 0.25);
+        round_to_f64_test(i2f(1i64 << 60, 62), 0.25);
+        round_to_f64_test(i2f(Integer::from(1) << 1000, 1002), 0.25);
+        round_to_f64_test(i2f(-1i64, 2), -0.25);
+        round_to_f64_test(i2f(-1i64 << 50, 52), -0.25);
+        round_to_f64_test(i2f(-1i64 << 60, 62), -0.25);
+        round_to_f64_test(i2f(Integer::from(-1) << 1000, 1002), -0.25);
+        round_to_f64_test(i2f(9i64, 2), 2.25);
+        round_to_f64_test(i2f(9i64 << 50, 52), 2.25);
+        round_to_f64_test(i2f(9i64 << 59, 61), 2.25);
+        round_to_f64_test(i2f(Integer::from(9) << 1000, 1002), 2.25);
+        round_to_f64_test(i2f(-9i64, 2), -2.25);
+        round_to_f64_test(i2f(-9i64 << 50, 52), -2.25);
+        round_to_f64_test(i2f(-9i64 << 59, 61), -2.25);
+        round_to_f64_test(i2f(Integer::from(-9) << 1000, 1002), -2.25);
+
+        // Barely enough bits to fit in significand
+        round_to_f64_test(i2f(0x1_3333_3333_3333_3i64, 0), 5404319552844595.0);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_3i64, 52), 1.2);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_3i64 << 8, 60), 1.2);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_3i64, 0), -5404319552844595.0);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_3i64, 52), -1.2);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_3i64 << 8, 60), -1.2);
+
+        // Too many bits; test rounding mode
+        round_to_f64_test(i2f(0x1_3333_3333_3333_30i64, 0), 86469112845513520.0);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_34i64, 0), 86469112845513520.0);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_38i64, 0), 86469112845513536.0);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_3ci64, 0), 86469112845513536.0);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_40i64, 0), 86469112845513536.0);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_44i64, 0), 86469112845513536.0);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_48i64, 0), 86469112845513536.0);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_4ci64, 0), 86469112845513552.0);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_30i64, 52), 19.2);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_34i64, 52), 19.2);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_38i64, 52), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_3ci64, 52), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_40i64, 52), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_44i64, 52), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_48i64, 52), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_4ci64, 52), 19.200000000000006);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_30i64 << 4, 56), 19.2);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_34i64 << 4, 56), 19.2);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_38i64 << 4, 56), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_3ci64 << 4, 56), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_40i64 << 4, 56), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_44i64 << 4, 56), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_48i64 << 4, 56), 19.200000000000003);
+        round_to_f64_test(i2f(0x1_3333_3333_3333_4ci64 << 4, 56), 19.200000000000006);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_30i64, 0), -86469112845513520.0);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_34i64, 0), -86469112845513520.0);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_38i64, 0), -86469112845513536.0);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_3ci64, 0), -86469112845513536.0);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_40i64, 0), -86469112845513536.0);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_44i64, 0), -86469112845513536.0);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_48i64, 0), -86469112845513536.0);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_4ci64, 0), -86469112845513552.0);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_30i64, 52), -19.2);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_34i64, 52), -19.2);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_38i64, 52), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_3ci64, 52), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_40i64, 52), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_44i64, 52), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_48i64, 52), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_4ci64, 52), -19.200000000000006);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_30i64 << 4, 56), -19.2);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_34i64 << 4, 56), -19.2);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_38i64 << 4, 56), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_3ci64 << 4, 56), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_40i64 << 4, 56), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_44i64 << 4, 56), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_48i64 << 4, 56), -19.200000000000003);
+        round_to_f64_test(i2f(-0x1_3333_3333_3333_4ci64 << 4, 56), -19.200000000000006);
+
+        // Rounding causes the exponent to increase
+        round_to_f64_test(i2f(0x1_ffff_ffff_ffff_ffi64, 0), 144115188075855872.0);
+        round_to_f64_test(i2f(0x1_ffff_ffff_ffff_ffi64, 52), 32.0);
+        round_to_f64_test(i2f(0x1_ffff_ffff_ffff_ffi64 << 4, 56), 32.0);
+        round_to_f64_test(i2f(-0x1_ffff_ffff_ffff_ffi64, 0), -144115188075855872.0);
+        round_to_f64_test(i2f(-0x1_ffff_ffff_ffff_ffi64, 52), -32.0);
+        round_to_f64_test(i2f(-0x1_ffff_ffff_ffff_ffi64 << 4, 56), -32.0);
+
+        // Infinity!
+        round_to_f64_test(i2f(Integer::from(1) << 1024, 0), f64::INFINITY);
+        round_to_f64_test(i2f(Integer::from(1) << 1028, 4), f64::INFINITY);
+        round_to_f64_test(i2f(Integer::from(1) << 1028, 1), f64::INFINITY);
+        round_to_f64_test(i2f(Integer::from(0x1_ffff_ffff_ffff_ffi64) << (1024 - 56), 1), f64::INFINITY);
+        round_to_f64_test(i2f(Integer::from(0x1_ffff_ffff_ffff_f0i64) << (1024 - 56), 1), 1.7976931348623157e308);
+        round_to_f64_test(i2f(Integer::from(-1) << 1024, 0), -f64::INFINITY);
+        round_to_f64_test(i2f(Integer::from(-1) << 1028, 4), -f64::INFINITY);
+        round_to_f64_test(i2f(Integer::from(-1) << 1028, 1), -f64::INFINITY);
+        round_to_f64_test(i2f(Integer::from(-0x1_ffff_ffff_ffff_ffi64) << (1024 - 56), 1), -f64::INFINITY);
+        round_to_f64_test(i2f(Integer::from(-0x1_ffff_ffff_ffff_f0i64) << (1024 - 56), 1), -1.7976931348623157e308);
+
+        // Subnormal numbers...
+        round_to_f64_test(i2f(3i64, 1024), 1.668805393880401e-308);
+        round_to_f64_test(i2f(3i64 << 30, 1054), 1.668805393880401e-308);
+        round_to_f64_test(i2f(-3i64, 1024), -1.668805393880401e-308);
+        round_to_f64_test(i2f(-3i64 << 30, 1054), -1.668805393880401e-308);
+        round_to_f64_test(i2f(0x1_ffff_ffff_ffff_ffi64, 1022 + 57), 2.2250738585072014e-308); // Sike! That's not subnormal!
+        round_to_f64_test(i2f(0x1_ffff_ffff_ffff_ffi64 << 1, 1022 + 58), 2.2250738585072014e-308); // Sike! That's not subnormal!
+        round_to_f64_test(i2f(-0x1_ffff_ffff_ffff_ffi64, 1022 + 57), -2.2250738585072014e-308); // Sike! That's not subnormal!
+        round_to_f64_test(i2f(-0x1_ffff_ffff_ffff_ffi64 << 1, 1022 + 58), -2.2250738585072014e-308); // Sike! That's not subnormal!
+        round_to_f64_test(i2f(1i64, 1074), 5e-324); // The smallest nonzero number
+        round_to_f64_test(i2f(1i64 << 10, 1084), 5e-324); // The smallest nonzero number
+        round_to_f64_test(i2f(1i64, 1075), 0.0); // Any smaller and it rounds to 0.0 (here because of round-ties-to-even)
+        round_to_f64_test(i2f(1i64 << 10, 1085), 0.0); // Any smaller and it rounds to 0.0 (here because of round-ties-to-even)
+        round_to_f64_test(i2f(-1i64, 1074), -5e-324); // The smallest nonzero number
+        round_to_f64_test(i2f(-1i64 << 10, 1084), -5e-324); // The smallest nonzero number
+        round_to_f64_test(i2f(-1i64, 1075), 0.0); // Any smaller and it rounds to 0.0 (here because of round-ties-to-even)
+        round_to_f64_test(i2f(-1i64 << 10, 1085), 0.0); // Any smaller and it rounds to 0.0 (here because of round-ties-to-even)
     }
 }

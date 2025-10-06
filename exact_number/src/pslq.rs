@@ -12,7 +12,7 @@ use nalgebra::allocator::Allocator;
 use nalgebra::{DMatrix, DVector, DefaultAllocator, Dim, Matrix, Storage, VecStorage};
 
 use crate::algebraic::{check_combination, check_combination_product};
-use crate::{SqrtExpr, SqrtExprSum};
+use crate::basis::{SqrtExpr, SqrtExprSum};
 use crate::rat::Rat;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
