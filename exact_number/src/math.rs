@@ -1,11 +1,12 @@
 use std::{cmp::Ordering, iter::{Product, Sum}, ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign}};
 
 use approx::{AbsDiffEq, RelativeEq, UlpsEq};
-use malachite::base::{num::arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, NegAssign}, rounding_modes::RoundingMode};
-use nalgebra::{DMatrix, DVector, Field, SimdValue};
-use num::{Num, Signed, Zero};
+use malachite::{base::{num::{arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, NegAssign, Pow}, conversion::traits::RoundingFrom, logic::traits::SignificantBits}, rounding_modes::RoundingMode}, Integer};
+use nalgebra::{ComplexField, DMatrix, DVector, Field, RealField, SimdValue};
+use num::{FromPrimitive, Signed, Zero};
+use simba::scalar::SubsetOf;
 
-use crate::{rat::Rat, BasedExpr};
+use crate::{conversion::{IntoBaseless, TryBaselessFrom}, rat::Rat, BasedExpr};
 
 impl AddAssign<BasedExpr> for BasedExpr {
     fn add_assign(&mut self, mut rhs: BasedExpr) {
@@ -406,16 +407,66 @@ impl<'a> CheckedDiv<&BasedExpr> for &'a BasedExpr {
     }
 }
 
+impl Pow<i64> for BasedExpr {
+    type Output = BasedExpr;
+
+    fn pow(self, exp: i64) -> Self::Output {
+        (&self).pow(exp)
+    }
+}
+
+impl Pow<i64> for &BasedExpr {
+    type Output = BasedExpr;
+
+    fn pow(self, exp: i64) -> Self::Output {
+        if exp < 0 {
+            (self.to_one() / self).pow((-exp) as u64)
+        } else {
+            self.pow(exp as u64)
+        }
+    }
+}
+
+impl Pow<u64> for BasedExpr {
+    type Output = BasedExpr;
+
+    fn pow(self, exp: u64) -> Self::Output {
+        (&self).pow(exp)
+    }
+}
+
+impl Pow<u64> for &BasedExpr {
+    type Output = BasedExpr;
+
+    fn pow(self, exp: u64) -> Self::Output {
+        let mut acc = self.to_one();
+        for i in (0..exp.significant_bits()).rev() {
+            if (exp >> i & 1) == 0 {
+                acc = &acc * &acc;
+            } else {
+                acc = &acc * &acc * self;
+            }
+        }
+        acc
+    }
+}
+
 impl RemAssign<BasedExpr> for BasedExpr {
+    /// Performs the `%=` operation.
+    ///
+    /// This *floors*, unlike with primitive integers.
     fn rem_assign(&mut self, rhs: Self) {
-        let multiple = (&*self / &rhs).floor() * rhs;
+        let multiple = Floor::floor(&*self / &rhs) * rhs;
         *self -= multiple;
     }
 }
 
 impl RemAssign<&BasedExpr> for BasedExpr {
+    /// Performs the `%=` operation.
+    ///
+    /// This *floors*, unlike with primitive integers.
     fn rem_assign(&mut self, rhs: &Self) {
-        let multiple = (&*self / rhs).floor() * rhs;
+        let multiple = Floor::floor(&*self / rhs) * rhs;
         *self -= multiple;
     }
 }
@@ -423,6 +474,9 @@ impl RemAssign<&BasedExpr> for BasedExpr {
 impl Rem<BasedExpr> for BasedExpr {
     type Output = BasedExpr;
 
+    /// Performs the `%` operation.
+    ///
+    /// This *floors*, unlike with primitive integers.
     fn rem(mut self, rhs: BasedExpr) -> Self::Output {
         self %= rhs;
         self
@@ -432,6 +486,9 @@ impl Rem<BasedExpr> for BasedExpr {
 impl Rem<&BasedExpr> for BasedExpr {
     type Output = BasedExpr;
 
+    /// Performs the `%` operation.
+    ///
+    /// This *floors*, unlike with primitive integers.
     fn rem(mut self, rhs: &BasedExpr) -> Self::Output {
         self %= rhs;
         self
@@ -441,16 +498,22 @@ impl Rem<&BasedExpr> for BasedExpr {
 impl<'a> Rem<BasedExpr> for &'a BasedExpr {
     type Output = BasedExpr;
 
+    /// Performs the `%` operation.
+    ///
+    /// This *floors*, unlike with primitive integers.
     fn rem(self, rhs: BasedExpr) -> Self::Output {
-        self - (self / &rhs).floor() * rhs
+        self - Floor::floor(self / &rhs) * rhs
     }
 }
 
 impl<'a> Rem<&BasedExpr> for &'a BasedExpr {
     type Output = BasedExpr;
 
+    /// Performs the `%` operation.
+    ///
+    /// This *floors*, unlike with primitive integers.
     fn rem(self, rhs: &BasedExpr) -> Self::Output {
-        self - (self / rhs).floor() * rhs
+        self - Floor::floor(self / rhs) * rhs
     }
 }
 
@@ -486,7 +549,7 @@ impl AbsDiff<&BasedExpr> for &BasedExpr {
 
 impl Ceiling for BasedExpr {
     type Output = BasedExpr; // because we need to preserve the basis
-    fn ceiling(self) -> Self::Output { self.round(RoundingMode::Ceiling) }
+    fn ceiling(self) -> Self::Output { (&self).round(RoundingMode::Ceiling) }
 }
 
 impl Ceiling for &BasedExpr {
@@ -496,7 +559,7 @@ impl Ceiling for &BasedExpr {
 
 impl Floor for BasedExpr {
     type Output = BasedExpr; // because we need to preserve the basis
-    fn floor(self) -> Self::Output { self.round(RoundingMode::Floor) }
+    fn floor(self) -> Self::Output { (&self).round(RoundingMode::Floor) }
 }
 
 impl Floor for &BasedExpr {
@@ -508,11 +571,11 @@ impl Floor for &BasedExpr {
 
 impl Signed for BasedExpr {
     fn abs(&self) -> Self {
-        if self.is_negative() { -self } else { self.clone() }
+        Abs::abs(self)
     }
 
     fn abs_sub(&self, other: &Self) -> Self {
-        (self - other).abs()
+        self.abs_diff(other)
     }
 
     fn signum(&self) -> Self {
@@ -574,10 +637,12 @@ impl Field for BasedExpr {}
 impl AbsDiffEq for BasedExpr {
     type Epsilon = BasedExpr;
 
+    /// Returns a baseless 0. These values are exact; no need for epsilon comparison.
     fn default_epsilon() -> Self::Epsilon {
         BasedExpr::BASELESS_ZERO
     }
 
+    /// Equivalent to checking equality
     fn abs_diff_eq(&self, other: &Self, _: Self::Epsilon) -> bool {
         // Exact values; no need for fudgy comparisons
         self == other
@@ -585,10 +650,12 @@ impl AbsDiffEq for BasedExpr {
 }
 
 impl UlpsEq for BasedExpr {
+    /// Returns 0. These values are exact; no need for epsilon comparison.
     fn default_max_ulps() -> u32 {
         0
     }
 
+    /// Equivalent to checking equality
     fn ulps_eq(&self, other: &Self, epsilon: Self::Epsilon, _: u32) -> bool {
         // Exact values; no need for fudgy comparisons
         self.abs_diff_eq(other, epsilon)
@@ -596,10 +663,12 @@ impl UlpsEq for BasedExpr {
 }
 
 impl RelativeEq for BasedExpr {
+    /// Returns a baseless 1. These values are exact; no need for epsilon comparison.
     fn default_max_relative() -> Self::Epsilon {
         Self::BASELESS_ONE
     }
 
+    /// Equivalent to checking equality
     fn relative_eq(&self, other: &Self, _: Self::Epsilon, _: Self::Epsilon)
         -> bool {
         // Exact values; no need for fudgy comparisons
@@ -607,387 +676,430 @@ impl RelativeEq for BasedExpr {
     }
 }
 
-//impl FromPrimitive for BasedExpr {
-//    fn from_i64(n: i64) -> Option<Self> {
-//        Some(n.into())
-//    }
-//
-//    fn from_u64(n: u64) -> Option<Self> {
-//        Some(n.into())
-//    }
-//}
-//
-//impl SubsetOf<BasedExpr> for BasedExpr {
-//    fn to_superset(&self) -> BasedExpr {
-//        self.clone()
-//    }
-//
-//    fn from_superset_unchecked(element: &BasedExpr) -> Self {
-//        element.clone()
-//    }
-//
-//    fn is_in_subset(_: &BasedExpr) -> bool {
-//        true
-//    }
-//}
-//
-//impl SubsetOf<BasedExpr> for f64 {
-//    fn to_superset(&self) -> BasedExpr {
-//        // A necessary evil to make this compatible with nalgebra. Some methods don't *really* need ComplexField.
-//        BasedExpr::try_from(*self).unwrap_or_else(|e| panic!("{e:?}: cannot convert {self} to BasedExpr"))
-//    }
-//
-//    fn from_superset_unchecked(element: &BasedExpr) -> Self {
-//        element.try_into().unwrap_or_else(|e| panic!("{e:?}: cannot convert {element} to f64"))
-//    }
-//
-//    fn from_superset(element: &BasedExpr) -> Option<Self> {
-//        element.try_into().ok()
-//    }
-//
-//    fn is_in_subset(element: &BasedExpr) -> bool {
-//        Self::try_from(element).is_ok()
-//    }
-//}
-//
-//impl SubsetOf<BasedExpr> for f32 {
-//    fn to_superset(&self) -> BasedExpr {
-//        // A necessary evil to make this compatible with nalgebra. Some methods don't *really* need ComplexField.
-//        BasedExpr::try_from(*self).unwrap_or_else(|e| panic!("{e:?}: cannot convert {self} to BasedExpr"))
-//    }
-//
-//    fn from_superset_unchecked(element: &BasedExpr) -> Self {
-//        element.try_into().unwrap_or_else(|e| panic!("{e:?}: cannot convert {element} to f64"))
-//    }
-//
-//    fn from_superset(element: &BasedExpr) -> Option<Self> {
-//        element.try_into().ok()
-//    }
-//
-//    fn is_in_subset(element: &BasedExpr) -> bool {
-//        Self::try_from(element).is_ok()
-//    }
-//}
-//
-//impl RealField for BasedExpr {
-//    fn is_sign_positive(&self) -> bool {
-//        self.is_positive()
-//    }
-//
-//    fn is_sign_negative(&self) -> bool {
-//        self.is_negative()
-//    }
-//
-//    fn copysign(self, sign: Self) -> Self {
-//        match sign.cmp_zero() {
-//            Ordering::Less => -self,
-//            Ordering::Equal => sign,
-//            Ordering::Greater => self
-//        }
-//    }
-//
-//    fn max(self, other: Self) -> Self {
-//        Ord::max(self, other)
-//    }
-//
-//    fn min(self, other: Self) -> Self {
-//        Ord::min(self, other)
-//    }
-//
-//    fn clamp(self, min: Self, max: Self) -> Self {
-//        Ord::clamp(self, min, max)
-//    }
-//
-//    fn atan2(self, other: Self) -> Self {
-//        panic!("cannot take atan2 of field extension elements {self}, {other}")
-//    }
-//
-//    fn min_value() -> Option<Self> {
-//        None
-//    }
-//
-//    fn max_value() -> Option<Self> {
-//        None
-//    }
-//
-//    // And here comes another necessary evil
-//    // A bunch of irrational constants that can't be defined
-//
-//    fn pi() -> Self {
-//        panic!("π is not algebraic")
-//    }
-//
-//    fn two_pi() -> Self {
-//        panic!("2π is not algebraic")
-//    }
-//
-//    fn frac_pi_2() -> Self {
-//        panic!("π/2 is not algebraic")
-//    }
-//
-//    fn frac_pi_3() -> Self {
-//        panic!("π/3 is not algebraic")
-//    }
-//
-//    fn frac_pi_4() -> Self {
-//        panic!("π/4 is not algebraic")
-//    }
-//
-//    fn frac_pi_6() -> Self {
-//        panic!("π/6 is not algebraic")
-//    }
-//
-//    fn frac_pi_8() -> Self {
-//        panic!("π/8 is not algebraic")
-//    }
-//
-//    fn frac_1_pi() -> Self {
-//        panic!("1/π is not algebraic")
-//    }
-//
-//    fn frac_2_pi() -> Self {
-//        panic!("2/π is not algebraic")
-//    }
-//
-//    fn frac_2_sqrt_pi() -> Self {
-//        panic!("2/√π is not algebraic")
-//    }
-//
-//    fn e() -> Self {
-//        panic!("e is not algebraic")
-//    }
-//
-//    fn log2_e() -> Self {
-//        panic!("log_2(e) is not algebraic")
-//    }
-//
-//    fn log10_e() -> Self {
-//        panic!("log_10(e) is not algebraic")
-//    }
-//
-//    fn ln_2() -> Self {
-//        panic!("ln(2) is not algebraic")
-//    }
-//
-//    fn ln_10() -> Self {
-//        panic!("ln(10) is not algebraic")
-//    }
-//}
-//
-//// For use in matrices
-//impl ComplexField for BasedExpr {
-//    type RealField = BasedExpr;
-//
-//    #[doc = r" Builds a pure-real complex number from the given value."]
-//    fn from_real(re: Self::RealField) -> Self {
-//        re
-//    }
-//
-//    #[doc = r" The real part of this complex number."]
-//    fn real(self) -> Self::RealField {
-//        self
-//    }
-//
-//    #[doc = r" The imaginary part of this complex number."]
-//    fn imaginary(self) -> Self::RealField {
-//        self.zero()
-//    }
-//
-//    #[doc = r" The modulus of this complex number."]
-//    fn modulus(self) -> Self::RealField {
-//        // TODO: Change to owned abs
-//        self.abs()
-//    }
-//
-//    #[doc = r" The squared modulus of this complex number."]
-//    fn modulus_squared(self) -> Self::RealField {
-//        // TODO: Changed to owned square
-//        &self * &self
-//    }
-//
-//    #[doc = r" The argument of this complex number."]
-//    fn argument(self) -> Self::RealField {
-//        self.zero()
-//    }
-//
-//    #[doc = r" The sum of the absolute value of this complex number's real and imaginary part."]
-//    fn norm1(self) -> Self::RealField {
-//        self.modulus()
-//    }
-//
-//    #[doc = r" Multiplies this complex number by `factor`."]
-//    fn scale(self, factor: Self::RealField) -> Self {
-//        self * factor
-//    }
-//
-//    #[doc = r" Divides this complex number by `factor`."]
-//    fn unscale(self, factor: Self::RealField) -> Self {
-//        self / factor
-//    }
-//
-//    fn floor(self) -> Self {
-//        self.floor()
-//    }
-//
-//    fn ceil(self) -> Self {
-//        self.ceiling()
-//    }
-//
-//    fn round(self) -> Self {
-//        Integer::rounding_from(self, RoundingMode::Nearest).0.into()
-//    }
-//
-//    fn trunc(self) -> Self {
-//        Integer::rounding_from(self, RoundingMode::Down).0.into()
-//    }
-//
-//    fn fract(self) -> Self {
-//        self.clone() - self.trunc()
-//    }
-//
-//    fn mul_add(self, a: Self, b: Self) -> Self {
-//        self * a + b
-//    }
-//
-//    #[doc = r" The absolute value of this complex number: `self / self.signum()`."]
-//    #[doc = r""]
-//    #[doc = r" This is equivalent to `self.modulus()`."]
-//    fn abs(self) -> Self::RealField {
-//        Abs::abs(self)
-//    }
-//
-//    #[doc = r" Computes (self.conjugate() * self + other.conjugate() * other).sqrt()"]
-//    fn hypot(self, other: Self) -> Self::RealField {
-//        (self.square() + other.square()).checked_sqrt().unwrap_or_else(|| panic!("cannot take hypothenuse: self² + other² isn't a perfect square"))
-//    }
-//
-//    fn recip(self) -> Self {
-//        self.reciprocal()
-//    }
-//
-//    fn conjugate(self) -> Self {
-//        self
-//    }
-//
-//    fn sin(self) -> Self {
-//        panic!("cannot take sin of rational number {self}")
-//    }
-//
-//    fn cos(self) -> Self {
-//        panic!("cannot take cos of rational number {self}")
-//    }
-//
-//    fn sin_cos(self) -> (Self,Self) {
-//        panic!("cannot take sin_cos of rational number {self}")
-//    }
-//
-//    fn tan(self) -> Self {
-//        panic!("cannot take tan of rational number {self}")
-//    }
-//
-//    fn asin(self) -> Self {
-//        panic!("cannot take asin of rational number {self}")
-//    }
-//
-//    fn acos(self) -> Self {
-//        panic!("cannot take acos of rational number {self}")
-//    }
-//
-//    fn atan(self) -> Self {
-//        panic!("cannot take atan of rational number {self}")
-//    }
-//
-//    fn sinh(self) -> Self {
-//        panic!("cannot take sinh of rational number {self}")
-//    }
-//
-//    fn cosh(self) -> Self {
-//        panic!("cannot take cosh of rational number {self}")
-//    }
-//
-//    fn tanh(self) -> Self {
-//        panic!("cannot take tanh of rational number {self}")
-//    }
-//
-//    fn asinh(self) -> Self {
-//        panic!("cannot take asinh of rational number {self}")
-//    }
-//
-//    fn acosh(self) -> Self {
-//        panic!("cannot take acosh of rational number {self}")
-//    }
-//
-//    fn atanh(self) -> Self {
-//        panic!("cannot take atanh of rational number {self}")
-//    }
-//
-//    fn log(self, base: Self::RealField) -> Self {
-//        self.checked_log_base(&base).unwrap_or_else(|| panic!("cannot take log_{base} of this rational number")).into()
-//    }
-//
-//    fn log2(self) -> Self {
-//        self.checked_log_base_2().unwrap_or_else(|| panic!("cannot take log_2 of this rational number")).into()
-//    }
-//
-//    fn log10(self) -> Self {
-//        self.checked_log_base(&10.into()).unwrap_or_else(|| panic!("cannot take log_10 of this rational number")).into()
-//    }
-//
-//    fn ln(self) -> Self {
-//        panic!("cannot take ln_e of rational number {self}")
-//    }
-//
-//    fn ln_1p(self) -> Self {
-//        panic!("cannot take ln_1p of rational number {self}")
-//    }
-//
-//    fn sqrt(self) -> Self {
-//        self.checked_sqrt().unwrap_or_else(|| panic!("cannot take log_10 of this rational number")).into()
-//    }
-//
-//    fn exp(self) -> Self {
-//        panic!("cannot take exp of rational number {self}")
-//    }
-//
-//    fn exp2(self) -> Self {
-//        BasedExpr::TWO.pow((&self).try_into().unwrap_or_else(|e| panic!("{e:?} cannot take exp2 of this rational number ({self})")))
-//    }
-//
-//    fn exp_m1(self) -> Self {
-//        panic!("cannot take exp_m1 of rational number {self}")
-//    }
-//
-//    fn powi(self, n: i32) -> Self {
-//        self.pow(n as i64)
-//    }
-//
-//    fn powf(self, n: Self::RealField) -> Self {
-//        self.pow((&n).try_into().unwrap_or_else(|e| panic!("{e:?} cannot raise this rational number to the {n}-th power")))
-//    }
-//
-//    fn powc(self, n: Self) -> Self {
-//        self.powf(n)
-//    }
-//
-//    fn cbrt(self) -> Self {
-//        self.checked_root(3u64).unwrap_or_else(|| panic!("cannot take log_10 of this rational number"))
-//    }
-//
-//    fn is_finite(&self) -> bool {
-//        true
-//    }
-//
-//    fn try_sqrt(self) -> Option<Self> {
-//        self.checked_sqrt()
-//    }
-//}
+impl FromPrimitive for BasedExpr {
+    /// Converts into a baseless number.
+    fn from_i64(n: i64) -> Option<Self> {
+        Some(n.into_baseless())
+    }
+
+    /// Converts into a baseless number.
+    fn from_u64(n: u64) -> Option<Self> {
+        Some(n.into_baseless())
+    }
+}
+
+impl SubsetOf<BasedExpr> for BasedExpr {
+    fn to_superset(&self) -> BasedExpr {
+        self.clone()
+    }
+
+    fn from_superset_unchecked(element: &BasedExpr) -> Self {
+        element.clone()
+    }
+
+    fn is_in_subset(_: &BasedExpr) -> bool {
+        true
+    }
+}
+
+impl SubsetOf<BasedExpr> for f64 {
+    /// `f64` is technically not a subset of `BasedExpr`. This panics if
+    /// `self` is not finite.
+    fn to_superset(&self) -> BasedExpr {
+        // A necessary evil to make this compatible with nalgebra. Some methods don't *really* need ComplexField.
+        BasedExpr::try_baseless_from(*self).unwrap_or_else(|e| panic!("{e:?}: cannot convert {self} to BasedExpr"))
+    }
+
+    /// Uses nearest rounding, ties to even.
+    fn from_superset_unchecked(element: &BasedExpr) -> Self {
+        element.round_to_f64(RoundingMode::Nearest)
+    }
+
+    fn is_in_subset(element: &BasedExpr) -> bool {
+        true
+    }
+}
+
+impl SubsetOf<BasedExpr> for f32 {
+    /// `f32` is technically not a subset of `BasedExpr`. This panics if
+    /// `self` is not finite.
+    fn to_superset(&self) -> BasedExpr {
+        // A necessary evil to make this compatible with nalgebra. Some methods don't *really* need ComplexField.
+        BasedExpr::try_baseless_from(*self).unwrap_or_else(|e| panic!("{e:?}: cannot convert {self} to BasedExpr"))
+    }
+
+    /// Uses nearest rounding, ties to even.
+    fn from_superset_unchecked(element: &BasedExpr) -> Self {
+        element.round_to_f64(RoundingMode::Nearest) as f32
+    }
+
+    fn is_in_subset(element: &BasedExpr) -> bool {
+        true
+    }
+}
+
+impl RealField for BasedExpr {
+    fn is_sign_positive(&self) -> bool {
+        self.is_positive()
+    }
+
+    fn is_sign_negative(&self) -> bool {
+        self.is_negative()
+    }
+
+    fn copysign(self, sign: Self) -> Self {
+        match sign.cmp_zero() {
+            Ordering::Less => (-self).with_basis(sign.basis().cloned()),
+            Ordering::Equal => sign.with_basis(self.basis().cloned()),
+            Ordering::Greater => self.with_basis(sign.basis().cloned()),
+        }
+    }
+
+    fn max(self, other: Self) -> Self {
+        Ord::max(self, other)
+    }
+
+    fn min(self, other: Self) -> Self {
+        Ord::min(self, other)
+    }
+
+    fn clamp(self, min: Self, max: Self) -> Self {
+        Ord::clamp(self, min, max)
+    }
+
+    /// Fake function; do not call.
+    fn atan2(self, other: Self) -> Self {
+        panic!("cannot take atan2 of field extension elements {self}, {other}")
+    }
+
+    fn min_value() -> Option<Self> {
+        None
+    }
+
+    fn max_value() -> Option<Self> {
+        None
+    }
+
+    // And here comes another necessary evil
+    // A bunch of irrational constants that can't be defined
+
+    /// Fake function; do not call.
+    fn pi() -> Self {
+        panic!("π is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn two_pi() -> Self {
+        panic!("2π is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn frac_pi_2() -> Self {
+        panic!("π/2 is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn frac_pi_3() -> Self {
+        panic!("π/3 is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn frac_pi_4() -> Self {
+        panic!("π/4 is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn frac_pi_6() -> Self {
+        panic!("π/6 is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn frac_pi_8() -> Self {
+        panic!("π/8 is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn frac_1_pi() -> Self {
+        panic!("1/π is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn frac_2_pi() -> Self {
+        panic!("2/π is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn frac_2_sqrt_pi() -> Self {
+        panic!("2/√π is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn e() -> Self {
+        panic!("e is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn log2_e() -> Self {
+        panic!("log_2(e) is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn log10_e() -> Self {
+        panic!("log_10(e) is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn ln_2() -> Self {
+        panic!("ln(2) is not algebraic")
+    }
+
+    /// Fake function; do not call.
+    fn ln_10() -> Self {
+        panic!("ln(10) is not algebraic")
+    }
+}
+
+// For use in matrices
+impl ComplexField for BasedExpr {
+    type RealField = BasedExpr;
+
+    #[doc = r" Builds a pure-real complex number from the given value."]
+    fn from_real(re: Self::RealField) -> Self {
+        re
+    }
+
+    #[doc = r" The real part of this complex number."]
+    fn real(self) -> Self::RealField {
+        self
+    }
+
+    #[doc = r" The imaginary part of this complex number."]
+    fn imaginary(self) -> Self::RealField {
+        self.into_zero()
+    }
+
+    #[doc = r" The modulus of this complex number."]
+    fn modulus(self) -> Self::RealField {
+        Abs::abs(self)
+    }
+
+    #[doc = r" The squared modulus of this complex number."]
+    fn modulus_squared(self) -> Self::RealField {
+        &self * &self
+    }
+
+    #[doc = r" The argument of this complex number."]
+    fn argument(self) -> Self::RealField {
+        self.into_zero()
+    }
+
+    #[doc = r" The sum of the absolute value of this complex number's real and imaginary part."]
+    fn norm1(self) -> Self::RealField {
+        Abs::abs(self)
+    }
+
+    #[doc = r" Multiplies this complex number by `factor`."]
+    fn scale(self, factor: Self::RealField) -> Self {
+        self * factor
+    }
+
+    #[doc = r" Divides this complex number by `factor`."]
+    fn unscale(self, factor: Self::RealField) -> Self {
+        self / factor
+    }
+
+    fn floor(self) -> Self {
+        Floor::floor(self)
+    }
+
+    fn ceil(self) -> Self {
+        self.ceiling()
+    }
+
+    fn round(self) -> Self {
+        let basis = self.basis().cloned();
+        BasedExpr::new_baseless(self.round_to_integer(RoundingMode::Nearest).into()).with_basis(basis)
+    }
+
+    fn trunc(self) -> Self {
+        let basis = self.basis().cloned();
+        BasedExpr::new_baseless(self.round_to_integer(RoundingMode::Down).into()).with_basis(basis)
+    }
+
+    fn fract(self) -> Self {
+        self.clone() - self.trunc()
+    }
+
+    fn mul_add(self, a: Self, b: Self) -> Self {
+        self * a + b
+    }
+
+    #[doc = r" The absolute value of this complex number: `self / self.signum()`."]
+    #[doc = r""]
+    #[doc = r" This is equivalent to `self.modulus()`."]
+    fn abs(self) -> Self::RealField {
+        Abs::abs(self)
+    }
+
+    #[doc = r" Computes (self.conjugate() * self + other.conjugate() * other).sqrt()"]
+    /// Currently fake function; do not call.
+    fn hypot(self, other: Self) -> Self::RealField {
+        unimplemented!("cannot take hypothenuse of field extension yet. Some cases will stay undefined.")
+    }
+
+    fn recip(self) -> Self {
+        Self::BASELESS_ONE / self
+    }
+
+    fn conjugate(self) -> Self {
+        self
+    }
+
+    /// Fake function; do not call.
+    fn sin(self) -> Self {
+        panic!("cannot take sin of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn cos(self) -> Self {
+        panic!("cannot take cos of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn sin_cos(self) -> (Self,Self) {
+        panic!("cannot take sin_cos of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn tan(self) -> Self {
+        panic!("cannot take tan of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn asin(self) -> Self {
+        panic!("cannot take asin of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn acos(self) -> Self {
+        panic!("cannot take acos of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn atan(self) -> Self {
+        panic!("cannot take atan of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn sinh(self) -> Self {
+        panic!("cannot take sinh of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn cosh(self) -> Self {
+        panic!("cannot take cosh of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn tanh(self) -> Self {
+        panic!("cannot take tanh of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn asinh(self) -> Self {
+        panic!("cannot take asinh of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn acosh(self) -> Self {
+        panic!("cannot take acosh of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn atanh(self) -> Self {
+        panic!("cannot take atanh of field extension {self}")
+    }
+
+    /// Currently fake function; do not call.
+    fn log(self, base: Self::RealField) -> Self {
+        unimplemented!("cannot take log_{base} of field extension yet. Some cases will stay undefined.")
+    }
+
+    /// Currently fake function; do not call.
+    fn log2(self) -> Self {
+        unimplemented!("cannot take log_2 of field extension yet. Some cases will stay undefined.")
+    }
+
+    /// Currently fake function; do not call.
+    fn log10(self) -> Self {
+        unimplemented!("cannot take log_10 of field extension yet. Some cases will stay undefined.")
+    }
+
+    /// Fake function; do not call.
+    fn ln(self) -> Self {
+        panic!("cannot take ln_e of field extension {self}")
+    }
+
+    /// Fake function; do not call.
+    fn ln_1p(self) -> Self {
+        panic!("cannot take ln_1p of field extension {self}")
+    }
+
+    /// Currently fake function; do not call.
+    fn sqrt(self) -> Self {
+        panic!("cannot take sqrt of field extension yet. Some cases will stay undefined.")
+    }
+
+    /// Currently fake function; do not call.
+    fn exp(self) -> Self {
+        panic!("cannot take exp of field extension {self}")
+    }
+
+    /// Currently fake function; do not call.
+    fn exp2(self) -> Self {
+        panic!("cannot take exp2 of this field extension yet. Some cases will stay undefined.")
+    }
+
+    /// Fake function; do not call.
+    fn exp_m1(self) -> Self {
+        panic!("cannot take exp_m1 of field extension {self}")
+    }
+
+    fn powi(self, n: i32) -> Self {
+        self.pow(n as i64)
+    }
+
+    /// Currently fake function; do not call.
+    fn powf(self, n: Self::RealField) -> Self {
+        panic!("cannot raise field extension to the {n}-th power yet. Some cases will stay undefined")
+    }
+
+    fn powc(self, n: Self) -> Self {
+        self.powf(n)
+    }
+
+    /// Currently fake function; do not call.
+    fn cbrt(self) -> Self {
+        panic!("cannot take cbrt of field extension yet. Some cases will stay undefined")
+    }
+
+    fn is_finite(&self) -> bool {
+        true
+    }
+
+    /// Currently fake function; always returns `None`
+    fn try_sqrt(self) -> Option<Self> {
+        // TODO: Define if ready
+        None
+    }
+}
 
 #[cfg(test)]
 mod test {
     use std::cmp::Ordering;
 
     use crate::{based_expr, rat::Rat, BasedExpr};
-    use malachite::base::num::arithmetic::traits::{Abs, AbsDiff, CheckedDiv, Floor, Ceiling};
+    use malachite::base::num::arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, Pow};
 
     fn add_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
         assert_eq!(a.clone() + b.clone(), expected);
@@ -1057,6 +1169,11 @@ mod test {
         assert_eq!(b.clone().checked_div(&a), expected);
         assert_eq!((&b).checked_div(a.clone()), expected);
         assert_eq!((&b).checked_div(&a), expected);
+    }
+
+    fn pow_test(a: BasedExpr, exp: i64, expected: BasedExpr) {
+        assert_eq!(a.clone().pow(exp), expected);
+        assert_eq!((&a).pow(exp), expected);
     }
 
     fn abs_test(a: BasedExpr, expected: BasedExpr) {
@@ -1480,5 +1597,28 @@ mod test {
         abs_test(based_expr!(1 - sqrt 2), based_expr!(-1 + sqrt 2));
         abs_test(based_expr!(-1 + sqrt 2), based_expr!(-1 + sqrt 2));
         abs_test(based_expr!(0 + 0 sqrt 3), based_expr!(0 + 0 sqrt 3));
+    }
+
+    #[test]
+    fn test_based_expr_pow() {
+        pow_test(BasedExpr::new_baseless(0.into()), 0, BasedExpr::new_baseless(1.into()));
+        pow_test(BasedExpr::new_baseless(0.into()), 1, BasedExpr::new_baseless(0.into()));
+        pow_test(BasedExpr::new_baseless(5.into()), 0, BasedExpr::new_baseless(1.into()));
+        pow_test(BasedExpr::new_baseless(5.into()), 1, BasedExpr::new_baseless(5.into()));
+        pow_test(BasedExpr::new_baseless(5.into()), 2, BasedExpr::new_baseless(25.into()));
+        pow_test(BasedExpr::new_baseless(5.into()), -6, BasedExpr::new_baseless(Rat::from_signeds(1, 15625)));
+        pow_test(BasedExpr::new_baseless((-5i64).into()), 1, BasedExpr::new_baseless((-5i64).into()));
+        pow_test(BasedExpr::new_baseless((-5i64).into()), 2, BasedExpr::new_baseless(25.into()));
+
+        pow_test(based_expr!(0), 0, based_expr!(1));
+        pow_test(based_expr!(0), 1, based_expr!(0));
+        pow_test(based_expr!(5), 0, based_expr!(1));
+        pow_test(based_expr!(5), 1, based_expr!(5));
+        pow_test(based_expr!(5), 2, based_expr!(25));
+        pow_test(based_expr!(5), -6, based_expr!(1/15625));
+        pow_test(based_expr!(-5), 1, based_expr!(-5));
+        pow_test(based_expr!(-5), 2, based_expr!(25));
+
+        pow_test(based_expr!(1 + sqrt 2), 2, based_expr!(3 + 2 sqrt 2));
     }
 }

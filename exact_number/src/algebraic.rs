@@ -12,7 +12,7 @@ use algebraics::RealAlgebraicNumber;
 use malachite::Integer;
 use malachite::base::num::arithmetic::traits::{Sign as _};
 use num::Zero;
-use num::{bigint::Sign, BigInt, BigUint};
+use num::{bigint::Sign, BigInt};
 use num::traits::Pow;
 
 use crate::basis::{SqrtExpr, SqrtExprSum};

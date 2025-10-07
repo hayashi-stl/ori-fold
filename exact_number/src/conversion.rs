@@ -1,12 +1,14 @@
-use std::cmp::Ordering;
 
-use malachite::{base::{num::conversion::traits::{IsInteger, RoundingFrom, RoundingInto}, rounding_modes::RoundingMode}, Integer, Natural};
+use std::sync::LazyLock;
+
+use malachite::{base::{num::conversion::traits::{IsInteger, RoundingFrom}, rounding_modes::RoundingMode}, Integer, Natural};
 use nalgebra::DVector;
+use num::Num;
 
 use crate::{interval::Interval, rat::Rat, BasedExpr};
 
 impl BasedExpr {
-    /// Rounds this expression to the integer type
+    /// Rounds this expression to the integer type with the given rounding mode.
     pub fn round_to_integer(&self, mode: RoundingMode) -> Integer {
         match self {
             BasedExpr::Baseless(a) => Integer::rounding_from(a, mode).0,
@@ -21,7 +23,7 @@ impl BasedExpr {
         }
     }
 
-    /// Rounds this expression to the f64
+    /// Rounds this expression to the f64 with the given rounding mode.
     pub fn round_to_f64(&self, mode: RoundingMode) -> f64 {
         match self {
             BasedExpr::Baseless(a) => f64::rounding_from(a, mode).0,
@@ -40,7 +42,7 @@ impl BasedExpr {
     pub fn is_integer(&self) -> bool {
         match self {
             BasedExpr::Baseless(a) => a.is_integer(),
-            BasedExpr::Based(a, basis) => {
+            BasedExpr::Based(a, _) => {
                 a[0].is_integer() && a.iter().skip(1).all(|a| a == &Rat::ZERO)
             }
         }
@@ -72,11 +74,12 @@ impl BasedExpr {
         }
     }
 
-    /// Rounds this expression.
+    /// Rounds this expression to an integer with the given rounding mode,
+    /// while preserving the basis if it exists.
     pub fn round(&self, mode: RoundingMode) -> Self {
         let int = self.round_to_integer(mode);
         match self {
-            BasedExpr::Baseless(a) => BasedExpr::Baseless(int.into()),
+            BasedExpr::Baseless(_) => BasedExpr::Baseless(int.into()),
             BasedExpr::Based(a, basis) => {
                 let mut coeffs = DVector::repeat(a.len(), Rat::ZERO);
                 coeffs[0] = int.into();
@@ -188,6 +191,17 @@ impl TryFrom<&BasedExpr> for Natural { fn try_from(t: &BasedExpr) -> Result<Natu
 impl TryFrom<&BasedExpr> for Integer { fn try_from(t: &BasedExpr) -> Result<Integer, ()>{ t.try_to_integer().ok_or(()) } type Error = (); }
 impl TryFrom<BasedExpr> for Natural { fn try_from(t: BasedExpr) -> Result<Natural, ()>{ t.try_into_integer().and_then(|i| (&i).try_into().ok()).ok_or(()) } type Error = (); }
 impl TryFrom<BasedExpr> for Integer { fn try_from(t: BasedExpr) -> Result<Integer, ()>{ t.try_into_integer().ok_or(()) } type Error = (); }
+
+// Oof, not a regular expression
+//static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?x)
+//(
+//    \s*
+//    (?P<sign> [+-])\s*
+//    (?P<numerator> [0-9A-Za-z_]+)\s*
+//    (/ \s* (?P<denominator> [0-9A-Za-z_]+)\s*)?
+//    ((√ | \s sqrt))?
+//)
+//").unwrap());
 
 #[cfg(test)]
 mod test {

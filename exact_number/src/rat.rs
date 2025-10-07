@@ -3,11 +3,11 @@
 use std::{cmp::Ordering, fmt::Display, iter::{Product, Sum}, ops::{Add, AddAssign, Deref, DerefMut, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Shl, ShlAssign, Shr, ShrAssign, Sub, SubAssign}, str::FromStr};
 
 use approx::{AbsDiffEq, RelativeEq, UlpsEq};
-use malachite::{base::{named::Named, num::{arithmetic::traits::{Abs, AbsAssign, AbsDiff, AbsDiffAssign, Ceiling, CeilingAssign, CeilingLogBase, CeilingLogBase2, CeilingLogBasePowerOf2, CheckedDiv, CheckedLogBase, CheckedLogBase2, CheckedLogBasePowerOf2, CheckedRoot, CheckedSqrt, Floor, FloorAssign, FloorLogBase, FloorLogBase2, FloorLogBasePowerOf2, IsPowerOf2, NegAssign, NextPowerOf2, NextPowerOf2Assign, Pow as _, PowAssign, PowerOf2, Reciprocal, ReciprocalAssign, RoundToMultipleAssign, RoundToMultipleOfPowerOf2, RoundToMultipleOfPowerOf2Assign, Sign, Square, SquareAssign}, basic::{floats::PrimitiveFloat, signeds::PrimitiveSigned, traits::{NegativeOne, Two}, unsigneds::PrimitiveUnsigned}, comparison::traits::{EqAbs, OrdAbs, PartialOrdAbs}, conversion::{string::options::FromSciStringOptions, traits::{ConvertibleFrom, FromSciString, IsInteger, RoundingFrom, SciMantissaAndExponent, ToSci}}, logic::traits::SignificantBits}, rational_sequences::RationalSequence, rounding_modes::RoundingMode}, natural::conversion::primitive_int_from_natural::SignedFromNaturalError, platform::{Limb, SignedLimb}, rational::{arithmetic::traits::{Approximate, ApproximateAssign, DenominatorsInClosedInterval}, conversion::{continued_fraction::{convergents::RationalConvergents, to_continued_fraction::RationalContinuedFraction}, from_primitive_float::RationalFromPrimitiveFloatError, integer_from_rational::IntegerFromRationalError, natural_from_rational::NaturalFromRationalError, primitive_float_from_rational::FloatConversionError, primitive_int_from_rational::{SignedFromRationalError, UnsignedFromRationalError}, traits::{ContinuedFraction, Convergents}}, Rational}};
+use malachite::{base::{named::Named, num::{arithmetic::traits::{Abs, AbsAssign, AbsDiff, AbsDiffAssign, Ceiling, CeilingAssign, CeilingLogBase, CeilingLogBase2, CeilingLogBasePowerOf2, CheckedDiv, CheckedLogBase, CheckedLogBase2, CheckedLogBasePowerOf2, CheckedRoot, CheckedSqrt, Floor, FloorAssign, FloorLogBase, FloorLogBase2, FloorLogBasePowerOf2, IsPowerOf2, NegAssign, NextPowerOf2, NextPowerOf2Assign, Pow as _, PowAssign, PowerOf2, Reciprocal, ReciprocalAssign, RoundToMultipleAssign, RoundToMultipleOfPowerOf2, RoundToMultipleOfPowerOf2Assign, Sign, Square, SquareAssign}, basic::{floats::PrimitiveFloat, signeds::PrimitiveSigned, traits::{NegativeOne, Two}, unsigneds::PrimitiveUnsigned}, comparison::traits::{EqAbs, OrdAbs, PartialOrdAbs}, conversion::{string::options::FromSciStringOptions, traits::{ConvertibleFrom, FromSciString, IsInteger, RoundingFrom, SciMantissaAndExponent, ToSci}}, logic::traits::SignificantBits}, rational_sequences::RationalSequence, rounding_modes::RoundingMode}, platform::{Limb, SignedLimb}, rational::{arithmetic::traits::{Approximate, ApproximateAssign}, conversion::{continued_fraction::{convergents::RationalConvergents, to_continued_fraction::RationalContinuedFraction}, from_primitive_float::RationalFromPrimitiveFloatError, integer_from_rational::IntegerFromRationalError, natural_from_rational::NaturalFromRationalError, primitive_float_from_rational::FloatConversionError, primitive_int_from_rational::{SignedFromRationalError, UnsignedFromRationalError}, traits::{ContinuedFraction, Convergents}}, Rational}};
 use malachite::base::num::arithmetic::traits::RoundToMultiple;
 use malachite::base::num::basic::traits::{Zero as _, One as _};
-use nalgebra::{ComplexField, Field, RealField, Scalar, SimdValue};
-use num::{pow::Pow, traits::{NumAssign, NumAssignRef, NumRef, RefNum}, FromPrimitive, Num, One, Signed, Zero};
+use nalgebra::{ComplexField, Field, RealField, SimdValue};
+use num::{pow::Pow, FromPrimitive, Num, One, Signed, Zero};
 use simba::scalar::SubsetOf;
 
 pub type Integer = malachite::Integer;
@@ -57,6 +57,14 @@ impl Rat {
     pub fn into_numerator_and_denominator(self) -> (Natural, Natural) { self.0.into_numerator_and_denominator() }
     pub fn into_digits(self, base: &Natural) -> (Vec<Natural>, RationalSequence<Natural>) { self.0.into_digits(base) }
     pub fn into_power_of_2_digits(self, log_base: u64) -> (Vec<Natural>, RationalSequence<Natural>) { self.0.into_power_of_2_digits(log_base) }
+
+    /// Converts this into a signed numerator and a denominator
+    pub fn into_signed_numerator_and_denominator(self) -> (Integer, Natural) {
+        let sign = self.sign();
+        let (numer, denom) = self.into_numerator_and_denominator();
+        let numer = Integer::from_sign_and_abs(sign.is_ge(), numer);
+        (numer, denom)
+    }
 
 }
 

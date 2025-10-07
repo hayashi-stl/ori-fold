@@ -3,7 +3,6 @@
 use dashu_float::{DBig};
 use dashu_float::ops::SquareRoot;
 use dashu_int::{IBig, Sign, UBig};
-use dashu_int::ops::UnsignedAbs;
 use malachite::base::num::basic::traits::{NegativeOne, One, Zero};
 use malachite::base::num::arithmetic::traits::{Abs as _, FloorLogBase2, FloorSqrt, Pow, PowerOf2, Square, CheckedDiv};
 use malachite::Natural;

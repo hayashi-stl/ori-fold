@@ -1,5 +1,7 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
+use exact_number::{basis::ArcBasis, BasedExpr};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// A subjective interpretation about what the entire file represents.
@@ -20,7 +22,7 @@ pub enum FileClass {
 }
 
 #[derive(Clone, Debug)]
-pub struct Fold<N = f64> {
+pub struct Fold {
     /// The version of the FOLD spec that the file assumes.
     /// **Strongly recommended**, in case we ever have to make
     /// backward-incompatible changes.
@@ -37,10 +39,12 @@ pub struct Fold<N = f64> {
     pub file_description: Option<String>,
     /// A subjective interpretation about what the entire file represents.
     pub file_classes: Vec<FileClass>,
+    /// The key frame in the file; the one that isn't in a separate struct
+    pub key_frame: Frame,
     /// The frames in the file
-    pub file_frames: Vec<Frame<N>>,
+    pub file_frames: Vec<Frame>,
     /// Custom data
-    pub file_custom: HashMap<String, String>,
+    pub file_custom: HashMap<String, Value>,
 }
 
 /// A subjective interpretation about what the frame represents.
@@ -199,36 +203,35 @@ pub enum EdgeOrder {
 
 #[derive(Clone, Debug)]
 #[derive(Serialize, Deserialize)]
-pub struct Frame<N = f64> {
+#[serde(try_from = "crate::ser_de::SerDeFrame", into = "crate::ser_de::SerDeFrame")]
+pub struct Frame {
     /// The human author
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_author: Option<String>,
     /// A title for the frame.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_title: Option<String>,
     /// A description of the frame.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_description: Option<String>,
     /// A subjective interpretation about what the frame represents.
-    #[serde(default)]
     pub frame_classes: Vec<FrameClass>,
     /// Attributes that objectively describe properties of the
     /// folded structure being represented.
-    #[serde(default)]
     pub frame_attributes: Vec<FrameAttribute>,
     /// Physical or logical unit that all coordinates are relative to
-    #[serde(default)]
     pub frame_unit: FrameUnit,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "vertices_coords")]
-    pub vertices_coords_f64: Option<Vec<Vec<f64>>>,
-    /// For each vertex, an array of coordinates,
+    /// The basis that exact coordinates uses.
+    pub basis: Option<ArcBasis>,
+
+    /// For each vertex, an array of approximate coordinates,
     /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
     /// In higher dimensions, all trailing unspecified coordinates are implicitly
     /// zero.  **Recommended** except for frames with attribute `Abstract`.
-    #[serde(skip)]
-    pub vertices_coords: Option<Vec<Vec<N>>>,
+    pub vertices_coords_f64: Option<Vec<Vec<f64>>>,
+    /// For each vertex, an array of exact coordinates,
+    /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
+    /// In higher dimensions, all trailing unspecified coordinates are implicitly
+    /// zero.  **Recommended** except for frames with attribute `Abstract`.
+    pub vertices_coords_exact: Option<Vec<Vec<BasedExpr>>>,
     /// For each vertex, an array of vertices (vertex IDs)
     /// that are adjacent along edges.  If the frame represents an orientable
     /// manifold or planar linkage, this list should be ordered counterclockwise
@@ -239,7 +242,6 @@ pub struct Frame<N = f64> {
     /// **Recommended** in any frame lacking `edges_vertices` property
     /// (otherwise `vertices_vertices` can easily be computed from
     /// `edges_vertices` as needed).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vertices_vertices: Option<Vec<Vec<usize>>>,
     /// For each vertex, an array of edge IDs for the edges
     /// incident to the vertex.  If the frame represents an orientable manifold,
@@ -249,7 +251,6 @@ pub struct Frame<N = f64> {
     /// In all cases, the linear order should match `vertices_vertices` if both
     /// are specified: `vertices_edges[v][i]` should be an edge connecting vertices
     /// `v` and `vertices_vertices[v][i]`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vertices_edges: Option<Vec<Vec<usize>>>,
     /// For each vertex, an array of face IDs for the faces
     /// incident to the vertex, possibly including `None`s.
@@ -269,7 +270,6 @@ pub struct Frame<N = f64> {
     /// nonorientable manifold, this list should be cyclically ordered around the
     /// vertex (possibly repeating a vertex), and matching the cyclic order of
     /// `vertices_vertices` and/or `vertices_edges` (if either is specified).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vertices_faces: Option<Vec<Vec<Option<usize>>>>,
     /// `edges_vertices`: For each edge, an array `[u, v]` of two vertex IDs for
     /// the two endpoints of the edge.  This effectively defines the *orientation*
@@ -277,7 +277,6 @@ pub struct Frame<N = f64> {
     /// but is used to define the ordering of `edges_faces`.)
     /// **Recommended** in frames having any `edges_...` property
     /// (e.g., to represent mountain-valley assignment).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edges_vertices: Option<Vec<[usize; 2]>>,
     /// For each edge, an array of face IDs for the faces incident
     /// to the edge, possibly including `None`s.
@@ -292,10 +291,8 @@ pub struct Frame<N = f64> {
     /// manifold orientation given by the counterclockwise orientation of faces.
     /// However, a boundary edge may also be represented by a length-1 array, with
     /// the `None` omitted, to be consistent with the nonmanifold representation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edges_faces: Option<Vec<Vec<Option<usize>>>>,
     /// For each edge, a string representing its fold direction assignment
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edges_assignment: Option<Vec<EdgeAssignment>>,
     /// For each edge, the fold angle (deviation from flatness)
     /// along each edge of the pattern.  The fold angle is a number in degrees
@@ -306,37 +303,33 @@ pub struct Frame<N = f64> {
     /// 
     /// For now, this is an `f64` regardless of `N`, because finding a good representation
     /// with `N` is tricky. `[cos(a), sin(a)]` doesn't work because -180° and 180° are both in range.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "edges_foldAngle")]
     pub edges_fold_angle_f64: Option<Vec<f64>>,
     /// For each edge, the *exact* fold angle (deviation from flatness)
     /// along each edge of the pattern, written as `(negative?, cos(a), sin(a))`.
     /// Both `cos(a)` and `sin(a)` are stored to ensure they're both in `N`.
-    ///#[serde(skip)]
-    ///pub edges_fold_angle_cs: Option<Vec<(bool, N, N)>>,
+    pub edges_fold_angle_cs: Option<Vec<(bool, BasedExpr, BasedExpr)>>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "edges_lengths")]
-    pub edges_length_f64: Option<Vec<f64>>,
-    /// For each edge, the length of the edge.
+    /// For each edge, the approximate length of the edge.
     /// This is mainly useful for defining the intrinsic geometry of
     /// abstract complexes where `vertices_coords` are unspecified;
     /// otherwise, `edges_length` can be computed from `vertices_coords`.
-    #[serde(skip)]
-    pub edges_length: Option<Vec<N>>,
+    pub edges_length_f64: Option<Vec<f64>>,
+    /// For each edge, the exact squared length of the edge.
+    /// This is mainly useful for defining the intrinsic geometry of
+    /// abstract complexes where `vertices_coords` are unspecified;
+    /// otherwise, `edges_length` can be computed from `vertices_coords`.
+    pub edges_length2_exact: Option<Vec<BasedExpr>>,
 
     /// For each face, an array of vertex IDs for the vertices
     /// around the face *in counterclockwise order*.  This array can repeat the
     /// same vertex multiple times (e.g., if the face has a "slit" in it).
     /// **Recommended** in any frame having faces.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub faces_vertices: Option<Vec<Vec<usize>>>,
     /// For each face, an array of edge IDs for the edges around
     /// the face *in counterclockwise order*.  In addition to the matching cyclic
     /// order, `faces_vertices` and `faces_edges` should align in start so that
     /// `faces_edges[f][i]` is the edge connecting `faces_vertices[f][i]` and
     /// `faces_vertices[f][(i+1)%d]` where `d` is the degree of face `f`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub faces_edges: Option<Vec<Vec<usize>>>,
     /// `faces_faces`: For each face, an array of face IDs for the faces *sharing
     /// edges* around the face, possibly including `null`s.
@@ -345,7 +338,6 @@ pub struct Frame<N = f64> {
     /// `f` and `faces_faces[f][i]` should be the faces incident to the edge
     /// `faces_edges[f][i]`, unless that edge has no face on the other side,
     /// in which case `faces_faces[f][i]` should be `null`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub faces_faces: Option<Vec<Vec<Option<usize>>>>,
     
     /// An array of triples `(f, g, s)` where `f` and `g` are face IDs
@@ -358,7 +350,6 @@ pub struct Frame<N = f64> {
     ///   (e.g., they do not overlap in their interiors).
     ///
     /// **Recommended** for frames with interior-overlapping faces.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub face_orders: Option<Vec<(usize, usize, FaceOrder)>>,
     /// An array of triples `[e, f, s]` where `e` and `f` are edge IDs
     /// and `s` is a `EdgeOrder`.
@@ -371,24 +362,20 @@ pub struct Frame<N = f64> {
     ///
     /// This property makes sense only in 2D.
     /// **Recommended** for linkage configurations with interior-overlapping edges.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_orders: Option<Vec<(usize, usize, EdgeOrder)>>,
 
     /// Parent frame ID.  Intuitively, this frame (the child)
     /// is a modification (or, in general, is related to) the parent frame.
     /// This property is optional, but enables organizing frames into a tree
     /// structure.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_parent: Option<usize>,
     /// If true, any properties in the parent frame
     /// (or recursively inherited from an ancestor) that is not overridden in
     /// this frame are automatically inherited, allowing you to avoid duplicated
     /// data in many cases.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_inherit: Option<bool>,
     /// Custom data
-    #[serde(flatten)]
-    pub frame_custom: HashMap<String, String>,
+    pub frame_custom: HashMap<String, Value>,
 }
 
 #[cfg(test)]

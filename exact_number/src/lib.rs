@@ -1,15 +1,14 @@
 use std::cmp::Ordering;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
-use std::iter::{Product, Sum};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, RwLock};
+use std::sync::{LazyLock, RwLock};
 
-use malachite::base::num::basic::traits::{One as _, Zero as _};
-use malachite::base::num::conversion::traits::{IsInteger, RoundingFrom};
-use malachite::{Integer, Natural};
-use malachite::base::num::arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, NegAssign, Sign, Square};
-use nalgebra::{ComplexField, DMatrix, DVector, DVectorView, Field, RealField, SimdValue};
-use num::{FromPrimitive, Num, One, Signed, Zero};
+pub use malachite;
+use malachite::base::num::basic::traits::{Zero as _};
+use malachite::Integer;
+use malachite::base::num::arithmetic::traits::{Abs, Sign, Square};
+use nalgebra::{DVector, DVectorView};
+use num::{Num, One, Signed, Zero};
 
 use crate::basis::{ArcBasis, Basis, BasisError, SqrtExpr};
 use crate::interval::{Fixed, Interval};
@@ -22,15 +21,16 @@ mod interval;
 pub mod basis;
 pub mod math;
 pub mod conversion;
+mod parse;
 //mod matrix;
 
 #[macro_export]
 macro_rules! sqrt_expr_helper {
     ($( { $as:literal $an:literal sqrt $($sqrt:tt)* } )*) => {
-        crate::SqrtExpr::Sum(vec![$(
+        $crate::basis::SqrtExpr::Sum(vec![$(
             (
-                malachite::Integer::from_sign_and_abs($as, ($an as u64).into()),
-                crate::sqrt_expr_parse!($($sqrt)*)
+                $crate::malachite::Integer::from_sign_and_abs($as, ($an as u64).into()),
+                $crate::sqrt_expr_parse!($($sqrt)*)
             ),
         )*])
     };
@@ -38,40 +38,40 @@ macro_rules! sqrt_expr_helper {
 
 #[macro_export]
 macro_rules! sqrt_expr_parse {
-    ($int:literal) => { crate::SqrtExpr::Int(malachite::Integer::from($int as i64)) };
-    ($( { $($init:tt)* } )* + sqrt $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [+] 1 sqrt $($tt)*) };
-    ($( { $($init:tt)* } )* - sqrt $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [-] 1 sqrt $($tt)*) };
-    ($( { $($init:tt)* } )* + $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [+] $($tt)*) };
-    ($( { $($init:tt)* } )* - $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [-] $($tt)*) };
-    ($( { $($init:tt)* } )* sqrt $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [+] 1 sqrt $($tt)*) };
-    ($an:literal $($tt:tt)*) => { crate::sqrt_expr_parse!(+ $an $($tt)*) };
-    ($( { $($init:tt)* } )* [+] $an:literal) => { crate::sqrt_expr_parse!($( { $($init)* } )* [+] $an sqrt(1)) };
-    ($( { $($init:tt)* } )* [-] $an:literal) => { crate::sqrt_expr_parse!($( { $($init)* } )* [-] $an sqrt(1)) };
-    ($( { $($init:tt)* } )* [+] $an:literal + $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [+] $an sqrt(1) + $($tt)*) };
-    ($( { $($init:tt)* } )* [-] $an:literal + $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [-] $an sqrt(1) + $($tt)*) };
-    ($( { $($init:tt)* } )* [+] $an:literal - $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [+] $an sqrt(1) - $($tt)*) };
-    ($( { $($init:tt)* } )* [-] $an:literal - $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [-] $an sqrt(1) - $($tt)*) };
-    ($( { $($init:tt)* } )* [+] $an:literal sqrt $sqrt:literal $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [+] $an sqrt ($sqrt) $($tt)* ) };
-    ($( { $($init:tt)* } )* [-] $an:literal sqrt $sqrt:literal $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* [-] $an sqrt ($sqrt) $($tt)* ) };
-    ($( { $($init:tt)* } )* [+] $an:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* { true $an sqrt $($sqrt)* } $($tt)*) };
-    ($( { $($init:tt)* } )* [-] $an:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { crate::sqrt_expr_parse!($( { $($init)* } )* { false $an sqrt $($sqrt)* } $($tt)*) };
-    ($( { $($terms:tt)* } )*) => { crate::sqrt_expr_helper!($( { $($terms)* } )*)}
+    ($int:literal) => { $crate::basis::SqrtExpr::Int($crate::malachite::Integer::from($int as i64)) };
+    ($( { $($init:tt)* } )* + sqrt $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [+] 1 sqrt $($tt)*) };
+    ($( { $($init:tt)* } )* - sqrt $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [-] 1 sqrt $($tt)*) };
+    ($( { $($init:tt)* } )* + $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [+] $($tt)*) };
+    ($( { $($init:tt)* } )* - $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [-] $($tt)*) };
+    ($( { $($init:tt)* } )* sqrt $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [+] 1 sqrt $($tt)*) };
+    ($an:literal $($tt:tt)*) => { $crate::sqrt_expr_parse!(+ $an $($tt)*) };
+    ($( { $($init:tt)* } )* [+] $an:literal) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [+] $an sqrt(1)) };
+    ($( { $($init:tt)* } )* [-] $an:literal) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [-] $an sqrt(1)) };
+    ($( { $($init:tt)* } )* [+] $an:literal + $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [+] $an sqrt(1) + $($tt)*) };
+    ($( { $($init:tt)* } )* [-] $an:literal + $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [-] $an sqrt(1) + $($tt)*) };
+    ($( { $($init:tt)* } )* [+] $an:literal - $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [+] $an sqrt(1) - $($tt)*) };
+    ($( { $($init:tt)* } )* [-] $an:literal - $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [-] $an sqrt(1) - $($tt)*) };
+    ($( { $($init:tt)* } )* [+] $an:literal sqrt $sqrt:literal $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [+] $an sqrt ($sqrt) $($tt)* ) };
+    ($( { $($init:tt)* } )* [-] $an:literal sqrt $sqrt:literal $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* [-] $an sqrt ($sqrt) $($tt)* ) };
+    ($( { $($init:tt)* } )* [+] $an:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* { true $an sqrt $($sqrt)* } $($tt)*) };
+    ($( { $($init:tt)* } )* [-] $an:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { $crate::sqrt_expr_parse!($( { $($init)* } )* { false $an sqrt $($sqrt)* } $($tt)*) };
+    ($( { $($terms:tt)* } )*) => { $crate::sqrt_expr_helper!($( { $($terms)* } )*)}
 }
 
 #[macro_export]
 macro_rules! sqrt_expr {
     ($($tt:tt)*) => {
-        crate::sqrt_expr_parse!($($tt)*)
+        $crate::sqrt_expr_parse!($($tt)*)
     };
 }
 
 #[macro_export]
 macro_rules! expr_helper {
     ($( { $as:literal $an:literal / $ad:literal sqrt $($sqrt:tt)* })*) => {
-        crate::BasedExpr::from_terms(vec![$(
+        $crate::BasedExpr::from_terms(vec![$(
             (
-                crate::rat::Rat::from_sign_and_naturals($as, malachite::Natural::from($an as u64), malachite::Natural::from($ad as u64)),
-                crate::sqrt_expr_parse!($($sqrt)*)
+                $crate::rat::Rat::from_sign_and_naturals($as, $crate::malachite::Natural::from($an as u64), $crate::malachite::Natural::from($ad as u64)),
+                $crate::sqrt_expr_parse!($($sqrt)*)
             ),
         )*])
     };
@@ -79,56 +79,94 @@ macro_rules! expr_helper {
 
 #[macro_export]
 macro_rules! expr_parse {
-    ($( { $($init:tt)* } )* + sqrt $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [+] 1 / 1 sqrt $($tt)*) };
-    ($( { $($init:tt)* } )* - sqrt $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [-] 1 / 1 sqrt $($tt)*) };
-    ($( { $($init:tt)* } )* + $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [+] $($tt)*) };
-    ($( { $($init:tt)* } )* - $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [-] $($tt)*) };
-    ($( { $($init:tt)* } )* sqrt $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [+] 1 / 1 sqrt $($tt)*) };
-    ($an:literal $($tt:tt)*) => { crate::expr_parse!(+ $an $($tt)*) };
-    ($( { $($init:tt)* } )* [+] $an:literal) => { crate::expr_parse!($( { $($init)* } )* [+] $an / 1) };
-    ($( { $($init:tt)* } )* [-] $an:literal) => { crate::expr_parse!($( { $($init)* } )* [-] $an / 1) };
-    ($( { $($init:tt)* } )* [+] $an:literal + $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [+] $an / 1 + $($tt)*) };
-    ($( { $($init:tt)* } )* [-] $an:literal + $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [-] $an / 1 + $($tt)*) };
-    ($( { $($init:tt)* } )* [+] $an:literal - $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [+] $an / 1 - $($tt)*) };
-    ($( { $($init:tt)* } )* [-] $an:literal - $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [-] $an / 1 - $($tt)*) };
-    ($( { $($init:tt)* } )* [+] $an:literal sqrt $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [+] $an / 1 sqrt $($tt)*) };
-    ($( { $($init:tt)* } )* [-] $an:literal sqrt $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [-] $an / 1 sqrt $($tt)*) };
-    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal) => { crate::expr_parse!($( { $($init)* } )* [+] $an / $ad sqrt(1)) };
-    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal) => { crate::expr_parse!($( { $($init)* } )* [-] $an / $ad sqrt(1)) };
-    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal + $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [+] $an / $ad sqrt(1) + $($tt)*) };
-    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal + $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [-] $an / $ad sqrt(1) + $($tt)*) };
-    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal - $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [+] $an / $ad sqrt(1) - $($tt)*) };
-    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal - $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [-] $an / $ad sqrt(1) - $($tt)*) };
-    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal sqrt $sqrt:literal $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [+] $an / $ad sqrt ($sqrt) $($tt)* ) };
-    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal sqrt $sqrt:literal $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* [-] $an / $ad sqrt ($sqrt) $($tt)* ) };
-    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* { true $an / $ad sqrt $($sqrt)* } $($tt)*) };
-    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { crate::expr_parse!($( { $($init)* } )* { false $an / $ad sqrt $($sqrt)* } $($tt)*) };
-    ($( { $($terms:tt)* } )*) => { crate::expr_helper!($( { $($terms)* } )*)}
+    ($( { $($init:tt)* } )* + sqrt $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [+] 1 / 1 sqrt $($tt)*) };
+    ($( { $($init:tt)* } )* - sqrt $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [-] 1 / 1 sqrt $($tt)*) };
+    ($( { $($init:tt)* } )* + $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [+] $($tt)*) };
+    ($( { $($init:tt)* } )* - $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [-] $($tt)*) };
+    ($( { $($init:tt)* } )* sqrt $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [+] 1 / 1 sqrt $($tt)*) };
+    ($an:literal $($tt:tt)*) => { $crate::expr_parse!(+ $an $($tt)*) };
+    ($( { $($init:tt)* } )* [+] $an:literal) => { $crate::expr_parse!($( { $($init)* } )* [+] $an / 1) };
+    ($( { $($init:tt)* } )* [-] $an:literal) => { $crate::expr_parse!($( { $($init)* } )* [-] $an / 1) };
+    ($( { $($init:tt)* } )* [+] $an:literal + $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [+] $an / 1 + $($tt)*) };
+    ($( { $($init:tt)* } )* [-] $an:literal + $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [-] $an / 1 + $($tt)*) };
+    ($( { $($init:tt)* } )* [+] $an:literal - $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [+] $an / 1 - $($tt)*) };
+    ($( { $($init:tt)* } )* [-] $an:literal - $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [-] $an / 1 - $($tt)*) };
+    ($( { $($init:tt)* } )* [+] $an:literal sqrt $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [+] $an / 1 sqrt $($tt)*) };
+    ($( { $($init:tt)* } )* [-] $an:literal sqrt $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [-] $an / 1 sqrt $($tt)*) };
+    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal) => { $crate::expr_parse!($( { $($init)* } )* [+] $an / $ad sqrt(1)) };
+    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal) => { $crate::expr_parse!($( { $($init)* } )* [-] $an / $ad sqrt(1)) };
+    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal + $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [+] $an / $ad sqrt(1) + $($tt)*) };
+    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal + $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [-] $an / $ad sqrt(1) + $($tt)*) };
+    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal - $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [+] $an / $ad sqrt(1) - $($tt)*) };
+    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal - $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [-] $an / $ad sqrt(1) - $($tt)*) };
+    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal sqrt $sqrt:literal $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [+] $an / $ad sqrt ($sqrt) $($tt)* ) };
+    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal sqrt $sqrt:literal $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* [-] $an / $ad sqrt ($sqrt) $($tt)* ) };
+    ($( { $($init:tt)* } )* [+] $an:literal / $ad:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* { true $an / $ad sqrt $($sqrt)* } $($tt)*) };
+    ($( { $($init:tt)* } )* [-] $an:literal / $ad:literal sqrt ($($sqrt:tt)*) $($tt:tt)*) => { $crate::expr_parse!($( { $($init)* } )* { false $an / $ad sqrt $($sqrt)* } $($tt)*) };
+    ($( { $($terms:tt)* } )*) => { $crate::expr_helper!($( { $($terms)* } )*)}
 }
 
+
+/// A macro for generating expression "literals".
+/// 
+/// Some examples:
+/// ```rust
+/// based_expr!(1)
+/// based_expr!(1/2)
+/// based_expr!(1 + sqrt 2)
+/// based_expr!(-3 + 2/5 sqrt 6)
+/// based_expr!(0 + 0 sqrt 2 + 0 sqrt(2 + sqrt 2) + 1 sqrt(2 - sqrt 2))
+/// ```
+/// At least for now, a full basis must be specified, so you're not allowed to do,
+/// ```rust
+/// based_expr!(sqrt 17)
+/// ```
+/// for example, because $[\sqrt{17}]$ does not form a closed basis. You must do
+/// ```rust
+/// based_expr!(0 + sqrt 17)
+/// ```
+/// In addition, the first element of the basis must be 1, so
+/// ```rust
+/// based_expr!(sqrt 2 + 1)
+/// ```
+/// is not allowed either.
 #[macro_export]
 macro_rules! based_expr {
     ($($tt:tt)*) => {
-        crate::expr_parse!($($tt)*)
+        $crate::expr_parse!($($tt)*)
     };
 }
 
-/// An expression of a number, with a basis.
-/// Two values with different bases are incompatible and mixing them results in a panic.
+/// An expression of an algebraic number with a basis. Technically a member of a
+/// field extension of the real numbers.
 /// 
-/// Note: for this type, the `%` operator *floors*, which is not the behavior
+/// For example, $3 + 2\sqrt{2}$ has the basis $\left\langle 1, \sqrt{2}\right\rangle$
+/// with coefficients $\\left\langle 3, 2\right\rangle$.
+/// 
+/// It is assumed that the first element of the basis is 1.
+/// 
+/// Two values with different bases are incompatible and mixing them results in a panic.
+/// Treat them like different types.
+/// 
+/// Sometimes, a value is needed in a context where no basis can be provided. In such
+/// cases, a *baseless number* (`BasedExpr::Baseless`) is created. This is
+/// compatible with any basis, but any operation done where a basis is involved
+/// will result in a *based number* (`BasedExpr::Based`).
+/// 
+/// For this type, the `%` operator *floors*, which is not the behavior
 /// for good ol' primitive integers.
 #[derive(Clone)]
 pub enum BasedExpr {
-    /// The basis is unknown. Used when a value is needed and the basis can't be passed in
+    /// The basis is unknown. Used when a value is needed and there's nowhere to get a basis from
     Baseless(Rat),
-    /// The basis is the list of `SqrtExpr`. The first element of the basis must be 1.
+    /// The basis is the list of `SqrtExpr`. The first element of the basis is 1.
     Based(DVector<Rat>, ArcBasis)
 }
 
 impl Default for BasedExpr {
+    /// The default value, a baseless 0.
     fn default() -> Self {
-        Self::Baseless(Rat::ZERO)
+        Self::BASELESS_ZERO
     }
 }
 
@@ -144,13 +182,20 @@ impl BasedExpr {
     const BASELESS_ZERO: Self = Self::Baseless(Rat::ZERO);
     const BASELESS_ONE: Self = Self::Baseless(Rat::ONE);
 
-    /// Constructs a BasedExpr out of a rational without defining the basis yet
+    /// Constructs a baseless BasedExpr (one without a defined basis)
     pub fn new_baseless(q: Rat) -> Self {
         Self::Baseless(q)
     }
 
     /// Constructs a BasedExpr from its terms. The basis is defined by the second values of each entry.
-    pub fn from_terms_checked(terms: impl IntoIterator<Item = (Rat, SqrtExpr)>) -> Result<Self, BasisError> {
+    /// 
+    /// Remember, the first term of the basis must be 1.
+    /// 
+    /// Returns an `Err` if the basis:
+    /// * has something other than 1 as the first term, or
+    /// * is proven to have a linear dependency, or
+    /// * is not proven to be closed under multiplication
+    pub fn try_from_terms(terms: impl IntoIterator<Item = (Rat, SqrtExpr)>) -> Result<Self, BasisError> {
         let (mut coeffs, mut basis): (Vec<_>, Vec<_>) = terms.into_iter().unzip();
         if basis[0] != SqrtExpr::ONE {
             coeffs.insert(0, 0u64.into());
@@ -160,9 +205,21 @@ impl BasedExpr {
     }
 
     /// Constructs a BasedExpr from its terms. The basis is defined by the second values of each entry.
-    /// Panics if the basis is proven to not be a basis.
+    /// 
+    /// Remember, the first term of the basis must be 1.
+    /// 
+    /// Panics if the basis is:
+    /// * has something other than 1 as the first term, or
+    /// * is proven to have a linear dependency, or
+    /// * is not proven to be closed under multiplication
     pub fn from_terms(terms: impl IntoIterator<Item = (Rat, SqrtExpr)>) -> Self {
-        Self::from_terms_checked(terms).unwrap()
+        Self::try_from_terms(terms).unwrap()
+    }
+
+    pub fn try_from_coeffs_and_basis(mut coeffs: Vec<Rat>, basis: ArcBasis) -> Option<Self> {
+        if coeffs.len() > basis.len() { None? }
+        coeffs.resize(basis.len(), Rat::ZERO);
+        Some(BasedExpr::Based(DVector::from_vec(coeffs), basis))
     }
 
     /// Gets the sign of this expression.
@@ -236,6 +293,45 @@ impl BasedExpr {
         }
     }
 
+    fn with_basis(self, basis: Option<ArcBasis>) -> Self {
+        if let Some(basis) = basis {
+            match self {
+                Self::Baseless(q) => {
+                    let mut coeffs = DVector::repeat(basis.exprs.len(), Rat::ZERO);
+                    coeffs[0] = q;
+                    Self::Based(coeffs, basis)
+                },
+                Self::Based(coeffs, b) => {
+                    b.assert_compatible(&basis);
+                    Self::Based(coeffs, b)
+                }
+            }
+        } else { self }
+    }
+
+    /// Generates a 0 with `self`'s basis (or a baseless 0 if `self` is baseless)
+    pub fn into_zero(mut self) -> Self {
+        self.set_zero();
+        self
+    }
+
+    /// Generates a 0 with `self`'s basis (or a baseless 0 if `self` is baseless)
+    pub fn to_zero(&self) -> Self {
+        Self::BASELESS_ZERO.with_basis(self.basis().cloned())
+    }
+
+    /// Generates a 1 with `self`'s basis (or a baseless 1 if `self` is baseless)
+    pub fn into_one(mut self) -> Self {
+        self.set_one();
+        self
+    }
+
+    /// Generates a 1 with `self`'s basis (or a baseless 1 if `self` is baseless)
+    pub fn to_one(&self) -> Self {
+        Self::BASELESS_ONE.with_basis(self.basis().cloned())
+    }
+
+    /// Compares this to 0
     pub fn cmp_zero(&self) -> Ordering {
         match self {
             BasedExpr::Baseless(a) => a.cmp(&Rat::ZERO),
@@ -311,6 +407,7 @@ impl BasedExpr {
 }
 
 impl Zero for BasedExpr {
+    /// Generates a baseless 0
     fn zero() -> Self {
         Self::new_baseless(Rat::ZERO)
     }
@@ -321,11 +418,31 @@ impl Zero for BasedExpr {
             Self::Based(coeffs, _) => coeffs.iter().all(|c| c == &Rat::ZERO)
         }
     }
+
+    /// Sets this to 0, preserving the basis if there is one
+    fn set_zero(&mut self) {
+        match self {
+            Self::Baseless(q) => *q = Rat::ZERO,
+            Self::Based(coeffs, _) => coeffs.fill(Rat::ZERO)
+        }
+    }
 }
 
 impl One for BasedExpr {
+    /// Generates a baseless 1
     fn one() -> Self {
         Self::new_baseless(Rat::ONE)
+    }
+    
+    /// Sets this to 1, preserving the basis if there is one
+    fn set_one(&mut self) {
+        match self {
+            Self::Baseless(q) => *q = Rat::ONE,
+            Self::Based(coeffs, _) => {
+                coeffs.fill(Rat::ZERO);
+                coeffs[0] = Rat::ONE
+            }
+        }
     }
 }
 
@@ -393,14 +510,7 @@ impl Ord for BasedExpr {
     }
 }
 
-impl Num for BasedExpr {
-    type FromStrRadixErr = ();
-
-    fn from_str_radix(str: &str, radix: u32) -> Result<Self, Self::FromStrRadixErr> {
-        todo!()
-    }
-}
-
+#[used]
 static TEST_LOCK: LazyLock<RwLock<()>> = LazyLock::new(|| RwLock::new(()));
 
 #[cfg(test)]

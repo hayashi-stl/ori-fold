@@ -41,26 +41,34 @@ impl Debug for SqrtExpr {
 
 pub(crate) static BASES: LazyLock<Mutex<RefCell<Vec<Arc<Basis>>>>> = LazyLock::new(|| Mutex::new(RefCell::new(vec![])));
 
-/// A basis of with-rational-coefficients linearly independent numbers. The first element must be 1.
+/// A basis of with-rational-coefficients linearly independent numbers.
+/// 
+/// Requirements:
+/// * The first element must be 1.
+/// * The basis must be indeed linearly independent with rational coefficients
+///     (it is unknown whether this can be checked at all, let alone efficiently, so checking is a best-effort thing)
+/// * The basis must be closed under multiplication (products of pairs must be representable in the basis)
 #[derive(Debug)]
 pub struct Basis {
+    /// The actual expressions
     pub exprs: Vec<SqrtExpr>,
     /// Matrices stored sparsely, used for multiplication
     /// Specifically, for a component i, when multiplying a by b,
     /// we have (a*b)[i] = a * matrices[i] * b.
     /// The matrices are stored sparsely as (value, component to multiply in a, component to multiply in b)
     pub matrices: Vec<Vec<(Rat, usize, usize)>>,
-    /// Approximations for the basis elements.
+    /// `f64` approximations for the basis elements.
     pub float_approx: Vec<Interval<f64>>,
+    /// Fixed-point approximations for the basis elements.
     pub fixed_approx: Mutex<RefCell<Vec<Vec<Interval<Fixed>>>>>,
 }
 
 /// An error from trying to check a basis
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BasisError {
     /// Linear combination that proves linear dependence
     LinearlyDependent(Vec<Integer>),
-    /// (a, b, error), where a * b is linearly independent with the "basis"
+    /// (a, b, error), where a * b is not representable in the basis
     NotClosed(SqrtExpr, SqrtExpr, IntegerRelationError),
     /// The first element is not 1.
     FirstElementNotOne
@@ -168,7 +176,10 @@ impl Basis {
         Self::new_checked(basis).unwrap()
     }
 
-    pub(crate) fn new_arc_checked(basis: Vec<SqrtExpr>) -> Result<ArcBasis, BasisError> {
+    /// Creates a new internally stored basis.
+    /// 
+    /// Returns an `Err` if it fails to meet the requirements of `Basis`
+    pub fn new_arc_checked(basis: Vec<SqrtExpr>) -> Result<ArcBasis, BasisError> {
         //println!("Basis: {:?}", basis);
         let basis_lock = BASES.lock().expect("BASES mutex is poisoned");
         let mut basis_vec = basis_lock.borrow_mut();
@@ -183,9 +194,15 @@ impl Basis {
         Ok(ArcBasis(arc))
     }
 
-    fn new_arc(basis: Vec<SqrtExpr>) -> ArcBasis {
+    /// Creates a new internally stored basis.
+    /// 
+    /// Panics if it fails to meet the requirements of `Basis`
+    pub fn new_arc(basis: Vec<SqrtExpr>) -> ArcBasis {
         Self::new_arc_checked(basis).unwrap()
     }
+
+    /// The size of the basis
+    pub fn len(&self) -> usize { self.exprs.len() }
 }
 
 impl PartialEq for Basis {
@@ -196,6 +213,8 @@ impl PartialEq for Basis {
 
 impl Eq for Basis {}
 
+/// An internally-stored basis. Recommended, as proving closure under multiplcation and
+/// calculating fixed-point approximations can be expensive
 #[derive(Clone, Debug)]
 pub struct ArcBasis(Arc<Basis>);
 

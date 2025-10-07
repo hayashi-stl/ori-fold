@@ -1,9 +1,9 @@
 // I would use inari, but because of lack of support for rounding modes, it doesn't work on the web.
 
-use std::{cmp::Ordering, fmt::{Debug, Display}, iter::Sum, ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}};
+use std::{cmp::Ordering, fmt::Debug, iter::Sum, ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign}};
 
-use malachite::{base::{num::{arithmetic::traits::{Abs, AbsDiff, CeilingSqrt, DivRound, FloorLogBase2, FloorSqrt, ShrRound, Sign}, basic::traits::Zero, conversion::traits::{RoundingFrom, WrappingFrom}, logic::traits::BitAccess}, rounding_modes::RoundingMode}, Integer, Natural};
-use num::{Signed, Zero as _};
+use malachite::{base::{num::{arithmetic::traits::{Abs, CeilingSqrt, DivRound, FloorLogBase2, FloorSqrt, ShrRound, Sign}, basic::traits::Zero, conversion::traits::{RoundingFrom, WrappingFrom}, logic::traits::BitAccess}, rounding_modes::RoundingMode}, Integer, Natural};
+use num::Signed;
 
 use crate::{rat::Rat, basis::SqrtExpr};
 

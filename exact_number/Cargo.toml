@@ -12,4 +12,8 @@ dashu-int = "0.4.1"
 malachite = "0.6.1"
 nalgebra = "0.34.1"
 num = "0.4.3"
+peg = "0.8.5"
 simba = "0.9.1"
+
+[package.metadata.docs.rs]
+rustdoc-args = [ "--html-in-header", "./src/docs-header.html" ]
