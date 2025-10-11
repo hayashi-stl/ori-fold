@@ -1,7 +1,9 @@
-use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
+use std::{fs::File, io::BufReader, path::Path};
 use exact_number::{basis::ArcBasis, BasedExpr};
+use indexmap::IndexMap;
+use nalgebra::DMatrix;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// A subjective interpretation about what the entire file represents.
@@ -21,7 +23,10 @@ pub enum FileClass {
     Custom(String),
 }
 
+pub(crate) fn version() -> String { "1.2".to_owned() }
+
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))] // Really no point in this derivation outside of tests
 pub struct Fold {
     /// The version of the FOLD spec that the file assumes.
     /// **Strongly recommended**, in case we ever have to make
@@ -44,7 +49,23 @@ pub struct Fold {
     /// The frames in the file
     pub file_frames: Vec<Frame>,
     /// Custom data
-    pub file_custom: HashMap<String, Value>,
+    pub file_custom: IndexMap<String, Value>,
+}
+
+impl Default for Fold {
+    fn default() -> Self {
+        Self {
+            file_spec: version(),
+            file_creator: Default::default(),
+            file_author: Default::default(),
+            file_title: Default::default(),
+            file_description: Default::default(),
+            file_classes: Default::default(),
+            key_frame: Default::default(),
+            file_frames: Default::default(),
+            file_custom: Default::default(),
+        }
+    }
 }
 
 /// A subjective interpretation about what the frame represents.
@@ -150,6 +171,10 @@ impl Default for FrameUnit {
     }
 }
 
+impl FrameUnit {
+    pub fn is_default(&self) -> bool { self == &Self::Unit }
+}
+
 /// For each edge, a string representing its fold direction assignment
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[derive(Serialize, Deserialize)]
@@ -201,8 +226,30 @@ pub enum EdgeOrder {
     Left = 1,
 }
 
+/// A matrix of coordinates; either exact or approximate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CoordsRef<'a> {
+    Exact(&'a DMatrix<BasedExpr>),
+    Approx(&'a DMatrix<f64>)
+}
+
+impl<'a> CoordsRef<'a> {
+    /// Gets the number of vertices.
+    pub fn num_vertices(&self) -> usize {
+        match self {
+            CoordsRef::Exact(c) => c.ncols(),
+            CoordsRef::Approx(c) => c.ncols(),
+        }
+    }
+}
+
+/// A FOLD frame, containing geometry information.
+/// 
+/// All operations prefer exact coordinates (`vertices_coords_exact`, `edges_fold_angle_cs`, `edges_length2_exact`),
+/// not messing with approximate coordinates (`vertices_coords_f64`, `edges_fold_angle_f64`, `edges_length_f64`) when both exist.
 #[derive(Clone, Debug)]
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))] // Really no point in this derivation outside of tests
 #[serde(try_from = "crate::ser_de::SerDeFrame", into = "crate::ser_de::SerDeFrame")]
 pub struct Frame {
     /// The human author
@@ -225,13 +272,17 @@ pub struct Frame {
     /// For each vertex, an array of approximate coordinates,
     /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
     /// In higher dimensions, all trailing unspecified coordinates are implicitly
-    /// zero.  **Recommended** except for frames with attribute `Abstract`.
-    pub vertices_coords_f64: Option<Vec<Vec<f64>>>,
+    /// zero.
+    /// Vertex coordinates are columns.
+    /// **Recommended** except for frames with attribute `Abstract`.
+    pub vertices_coords_f64: Option<DMatrix<f64>>,
     /// For each vertex, an array of exact coordinates,
     /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
     /// In higher dimensions, all trailing unspecified coordinates are implicitly
-    /// zero.  **Recommended** except for frames with attribute `Abstract`.
-    pub vertices_coords_exact: Option<Vec<Vec<BasedExpr>>>,
+    /// zero.
+    /// Vertex coordinates are columns.
+    /// **Recommended** except for frames with attribute `Abstract`.
+    pub vertices_coords_exact: Option<DMatrix<BasedExpr>>,
     /// For each vertex, an array of vertices (vertex IDs)
     /// that are adjacent along edges.  If the frame represents an orientable
     /// manifold or planar linkage, this list should be ordered counterclockwise
@@ -374,8 +425,51 @@ pub struct Frame {
     /// this frame are automatically inherited, allowing you to avoid duplicated
     /// data in many cases.
     pub frame_inherit: Option<bool>,
+    /// Vertex custom data (has key `vertices_*` in file)
+    pub vertices_custom: IndexMap<String, Vec<Value>>,
+    /// Edge custom data (has key `edges_*` in file)
+    pub edges_custom: IndexMap<String, Vec<Value>>,
+    /// Face custom data (has key `faces_*` in file)
+    pub faces_custom: IndexMap<String, Vec<Value>>,
     /// Custom data
-    pub frame_custom: HashMap<String, Value>,
+    pub other_custom: IndexMap<String, Value>,
+}
+
+impl Default for Frame {
+    fn default() -> Self {
+        Self {
+            frame_author: Default::default(),
+            frame_title: Default::default(),
+            frame_description: Default::default(),
+            frame_classes: Default::default(),
+            frame_attributes: Default::default(),
+            frame_unit: FrameUnit::Unit,
+            basis: Default::default(),
+            vertices_coords_f64: Default::default(),
+            vertices_coords_exact: Default::default(),
+            vertices_vertices: Default::default(),
+            vertices_edges: Default::default(),
+            vertices_faces: Default::default(),
+            edges_vertices: Default::default(),
+            edges_faces: Default::default(),
+            edges_assignment: Default::default(),
+            edges_fold_angle_f64: Default::default(),
+            edges_fold_angle_cs: Default::default(),
+            edges_length_f64: Default::default(),
+            edges_length2_exact: Default::default(),
+            faces_vertices: Default::default(),
+            faces_edges: Default::default(),
+            faces_faces: Default::default(),
+            face_orders: Default::default(),
+            edge_orders: Default::default(),
+            frame_parent: Default::default(),
+            frame_inherit: Default::default(),
+            vertices_custom: Default::default(),
+            edges_custom: Default::default(),
+            faces_custom: Default::default(),
+            other_custom: Default::default(),
+        }
+    }
 }
 
 #[cfg(test)]

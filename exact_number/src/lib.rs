@@ -179,8 +179,8 @@ fn longer_first_ref<'a, T>(lhs: &'a [T], rhs: &'a [T]) -> (&'a [T], &'a [T]) {
 }
 
 impl BasedExpr {
-    const BASELESS_ZERO: Self = Self::Baseless(Rat::ZERO);
-    const BASELESS_ONE: Self = Self::Baseless(Rat::ONE);
+    pub const BASELESS_ZERO: Self = Self::Baseless(Rat::ZERO);
+    pub const BASELESS_ONE: Self = Self::Baseless(Rat::ONE);
 
     /// Constructs a baseless BasedExpr (one without a defined basis)
     pub fn new_baseless(q: Rat) -> Self {
@@ -220,6 +220,14 @@ impl BasedExpr {
         if coeffs.len() > basis.len() { None? }
         coeffs.resize(basis.len(), Rat::ZERO);
         Some(BasedExpr::Based(DVector::from_vec(coeffs), basis))
+    }
+
+    pub fn based_zero(basis: ArcBasis) -> Self {
+        Self::based_rational(Rat::ZERO, basis)
+    }
+
+    pub fn based_one(basis: ArcBasis) -> Self {
+        Self::based_rational(Rat::ONE, basis)
     }
 
     /// Gets the sign of this expression.
@@ -273,7 +281,7 @@ impl BasedExpr {
         }
     }
 
-    fn based_rational(q: Rat, basis: ArcBasis) -> Self {
+    pub fn based_rational(q: Rat, basis: ArcBasis) -> Self {
         let mut coeffs = vec![Rat::ZERO; basis.exprs.len()];
         coeffs[0] = q;
         Self::Based(coeffs.into(), basis)

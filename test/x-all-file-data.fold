@@ -1,0 +1,173 @@
+{
+    "file_spec": 1.1,
+    "file_creator": "oriedita",
+    "file_author": "hayastl",
+    "file_title": "x",
+    "file_description": "a simple cross pattern",
+    "file_classes": ["singleModel"],
+    "file_frames": [
+        {
+            "frame_title": "Nothing",
+            "frame_parent": 0
+        }
+    ],
+    "frame_author": "hayastl",
+    "frame_title": "The Key Frame",
+    "frame_description": "the crease pattern",
+    "frame_classes": ["creasePattern"],
+    "frame_attributes": ["2D", "manifold", "orientable", "nonSelfTouching", "nonSelfIntersecting", "noCuts", "noJoins", "convexFaces"],
+    "frame_unit": "mm",
+    "frame_exact:basis": ["sqrt 1"],
+    "vertices_coords": [
+        [-200, -200],
+        [-200, 200],
+        [200, 200],
+        [200, -200],
+        [0, 0]
+    ],
+    "vertices_exact:coords": [
+        [["-200/1"], ["-200/1"]],
+        [["-200/1"], ["200/1"]],
+        [["200/1"], ["200/1"]],
+        [["200/1"], ["-200/1"]],
+        [["0/1"], ["0/1"]]
+    ],
+    "vertices_vertices": [
+        [1, 4, 3],
+        [2, 4, 0],
+        [3, 4, 1],
+        [0, 4, 2],
+        [0, 1, 2, 3]
+    ],
+    "vertices_edges": [
+        [0, 4, 3],
+        [1, 5, 0],
+        [2, 6, 1],
+        [3, 7, 2],
+        [4, 5, 6, 7]
+    ],
+    "vertices_faces": [
+        [0, 3, null],
+        [1, 0, null],
+        [2, 1, null],
+        [3, 2, null],
+        [0, 1, 2, 3]
+    ],
+    "edges_vertices": [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+        [3, 0],
+        [0, 4],
+        [1, 4],
+        [2, 4],
+        [3, 4]
+    ],
+    "edges_faces": [
+        [0, null],
+        [1, null],
+        [2, null],
+        [3, null],
+        [3, 0],
+        [0, 1],
+        [1, 2],
+        [2, 3]
+    ],
+    "edges_assignment": [
+        "B",
+        "B",
+        "B",
+        "B",
+        "M",
+        "M",
+        "M",
+        "V"
+    ],
+    "edges_foldAngle": [
+        0,
+        0,
+        0,
+        0,
+        -180,
+        -180,
+        -180,
+        180
+    ],
+    "edges_exact:foldAngle": [
+        [false, ["1"], ["0"]],
+        [false, ["1"], ["0"]],
+        [false, ["1"], ["0"]],
+        [false, ["1"], ["0"]],
+        [true, ["-1"], ["0"]],
+        [true, ["-1"], ["0"]],
+        [true, ["-1"], ["0"]],
+        [false, ["-1"], ["0"]]
+    ],
+    "edges_length": [
+        200,
+        200,
+        200,
+        200,
+        141.4213562373095,
+        141.4213562373095,
+        141.4213562373095,
+        141.4213562373095
+    ],
+    "edges_exact:length2": [
+        ["40000"],
+        ["40000"],
+        ["40000"],
+        ["40000"],
+        ["20000"],
+        ["20000"],
+        ["20000"],
+        ["20000"]
+    ],
+    "faces_vertices": [
+        [0, 1, 4],
+        [1, 2, 4],
+        [2, 3, 4],
+        [3, 0, 4]
+    ],
+    "faces_edges": [
+        [0, 5, 4],
+        [1, 6, 5],
+        [2, 7, 6],
+        [3, 4, 7]
+    ],
+    "faces_faces": [
+        [null, 1, 3],
+        [null, 2, 0],
+        [null, 3, 1],
+        [null, 0, 2]
+    ],
+    "faceOrders": [],
+    "edgeOrders": [],
+    "frame_parent": null,
+    "frame_inherit": true,
+    "frame_test:foo": "bar",
+    "vertices_test:degree": [
+        3,
+        3,
+        3,
+        3,
+        4
+    ],
+    "edges_test:color": [
+        "red",
+        "green",
+        "red",
+        "green",
+        "blue",
+        "yellow",
+        "blue",
+        "yellow"
+    ],
+    "faces_test:circumcenter": [
+        [100, 0],
+        [200, 100],
+        [100, 200],
+        [0, 100]
+    ],
+    "oriedita:version": "1.1.3"
+}

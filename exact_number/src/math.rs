@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, iter::{Product, Sum}, ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign}};
 
 use approx::{AbsDiffEq, RelativeEq, UlpsEq};
-use malachite::{base::{num::{arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, NegAssign, Pow}, conversion::traits::RoundingFrom, logic::traits::SignificantBits}, rounding_modes::RoundingMode}, Integer};
+use malachite::{base::{num::{arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, NegAssign, Pow, Sign}, conversion::traits::RoundingFrom, logic::traits::SignificantBits}, rounding_modes::RoundingMode}, Integer};
 use nalgebra::{ComplexField, DMatrix, DVector, Field, RealField, SimdValue};
 use num::{FromPrimitive, Signed, Zero};
 use simba::scalar::SubsetOf;
@@ -565,6 +565,12 @@ impl Floor for BasedExpr {
 impl Floor for &BasedExpr {
     type Output = BasedExpr; // because we need to preserve the basis
     fn floor(self) -> Self::Output { self.round(RoundingMode::Floor) }
+}
+
+impl Sign for BasedExpr {
+    fn sign(&self) -> Ordering {
+        self.cmp_zero()
+    }
 }
 
 // ComplexField traits (for better nalgebra support. Note that not all functions are valid.)
