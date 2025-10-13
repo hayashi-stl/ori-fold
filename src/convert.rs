@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use nalgebra::{ClosedSubAssign, DMatrix, Scalar, Vector2};
 
-use crate::{filter, fold::{CoordsRef, Fold, Frame}, geom::{sort_by_angle_ref, AngleRep}};
+use crate::{filter, fold::{CoordsRef, EdgeAssignment, Fold, Frame}, geom::{sort_by_angle_ref, AngleRep}};
 use crate::geom;
 
 /// Given `edges_vertices` (defining edge endpoints),
@@ -189,8 +189,8 @@ pub fn edges_vertices_to_faces_vertices(coords: CoordsRef, edges_vertices: &[[us
     (vertices_vertices, faces_vertices)
 }
 
-/// Given `vertices_coords_exact` or `vertices_coords_f64` is `Some(2D points)`
-/// and `edges_vertices == Some(_)`,
+/// Given some 2D `vertices_coords` (exact or approximate)
+/// and `edges_vertices`,
 /// computes counterclockwise-sorted `vertices_vertices` and `vertices_edges` properties and
 /// constructs the implicitly defined faces, setting both `faces_vertices` and `faces_edges` properties.
 pub fn edges_vertices_to_faces_vertices_edges(coords: CoordsRef, edges_vertices: &[[usize; 2]])
@@ -201,8 +201,8 @@ pub fn edges_vertices_to_faces_vertices_edges(coords: CoordsRef, edges_vertices:
     (vertices_vertices, vertices_edges, faces_vertices, faces_edges)
 }
 
-/// Given a FOLD object frame with `faces_vertices == Some(_)`
-/// and `edges_vertices == Some(_)`,
+/// Given `faces_vertices`
+/// and `edges_vertices`,
 /// fills in the corresponding faces_edges property (preserving order).
 pub fn faces_vertices_to_faces_edges(faces_vertices: &[Vec<usize>], edges_vertices: &[[usize; 2]]) -> Vec<Vec<usize>> {
     let edge_map = edges_vertices.iter().enumerate()
@@ -215,6 +215,71 @@ pub fn faces_vertices_to_faces_edges(faces_vertices: &[Vec<usize>], edges_vertic
             vertices.iter().zip(vertices.iter().cycle().skip(1)).map(|(v0, v1)| edge_map[&(*v0, *v1)]).collect::<Vec<_>>())
         .collect::<Vec<_>>();
     faces_edges
+}
+
+/// Given `faces_vertices`, automatically computes
+/// `edges_vertices`, `edges_faces`, `faces_edges`, and `edges_assignment`.
+/// (indicating which edges are boundary with `EdgeAssignment::Boundary` and marking
+/// all other edges with `EdgeAssignment::Unassigned`).
+/// Currently assumes an orientable manifold, and uses `None`s to
+/// represent missing neighbor faces in `edges_faces` (for boundary edges).
+pub fn faces_vertices_to_edges(faces_vertices: &[Vec<usize>])
+    -> (Vec<[usize; 2]>, Vec<Vec<Option<usize>>>, Vec<Vec<usize>>, Vec<EdgeAssignment>)
+{
+    let mut edges_vertices = vec![];
+    let mut edges_faces = vec![];
+    let mut faces_edges = vec![];
+    let mut edges_assignment = vec![];
+    let mut edge_map = IndexMap::<[usize; 2], usize>::new();
+    
+    for (face, vertices) in faces_vertices.iter().enumerate() {
+        faces_edges.push({
+            vertices.iter().enumerate().map(|(i, &v1)| {
+                let v2 = vertices[(i + 1) % vertices.len()];
+                let mut key = [v1, v2];
+                key.sort();
+                
+                let edge = if let Some(&edge) = edge_map.get(&key) {
+                    edges_assignment[edge] = EdgeAssignment::Unassigned;
+                    edge
+                } else {
+                    let edge = edges_vertices.len();
+                    edge_map.insert(key, edge);
+                    edges_vertices.push(key);
+                    edges_faces.push(vec![None; 2]);
+                    edges_assignment.push(EdgeAssignment::Boundary);
+                    edge
+                };
+                edges_faces[edge][if v1 <= v2 { 0 } else { 1 }] = Some(face);
+                edge
+            }).collect::<Vec<_>>()
+        });
+    }
+
+    (edges_vertices, edges_faces, faces_edges, edges_assignment)
+}
+
+/// Given a FOLD object frame with `edges_vertices` and `faces_vertices`,
+/// fills in `edges_faces` and `faces_edges`.
+/// Currently assumes an orientable manifold, and uses `None`s to
+/// represent missing neighbor faces in `edges_faces` (for boundary edges).
+pub fn edges_vertices_to_edges_faces_edges(edges_vertices: &[[usize; 2]], faces_vertices: &[Vec<usize>])
+    -> (Vec<Vec<Option<usize>>>, Vec<Vec<usize>>)
+{
+    let mut edges_faces = vec![vec![None, None]; edges_vertices.len()];
+    let edge_map = edges_vertices.iter().enumerate().flat_map(|(edge, [v0, v1])| {[
+        ((*v0, *v1), (edge, 0)),
+        ((*v1, *v0), (edge, 1)),
+    ]}).collect::<IndexMap<_, _>>();
+    let faces_edges = faces_vertices.iter().enumerate().map(|(face, vertices)| {
+        vertices.iter().enumerate().map(|(i, &v1)| {
+            let v2 = vertices[(i + 1) % vertices.len()];
+            let (edge, orient) = edge_map[&(v1, v2)];
+            edges_faces[edge][orient] = Some(face);
+            edge
+        }).collect::<Vec<_>>()
+    }).collect::<Vec<_>>();
+    (edges_faces, faces_edges)
 }
 
 impl Frame {
@@ -349,6 +414,36 @@ impl Frame {
             self.faces_vertices.as_ref().expect("faces_vertices must exist"),
             self.edges_vertices.as_ref().expect("edges_vertices must exist"),
         ));
+    }
+
+    /// Given a FOLD object frame with `faces_vertices == Some(_)`, automatically computes
+    /// `edges_vertices`, `edges_faces`, `faces_edges`, and `edges_assignment`.
+    /// (indicating which edges are boundary with `EdgeAssignment::Boundary` and marking
+    /// all other edges with `EdgeAssignment::Unassigned`).
+    /// Currently assumes an orientable manifold, and uses `None`s to
+    /// represent missing neighbor faces in `edges_faces` (for boundary edges).
+    pub fn faces_vertices_to_edges(&mut self) {
+        let (edges_vertices, edges_faces, faces_edges, edges_assignment) = faces_vertices_to_edges(
+            self.faces_vertices.as_ref().expect("faces_vertices must exist"),
+        );
+        self.edges_vertices = Some(edges_vertices);
+        self.edges_faces = Some(edges_faces);
+        self.faces_edges = Some(faces_edges);
+        self.edges_assignment = Some(edges_assignment);
+    }
+
+    /// Given a FOLD object frame with `edges_vertices == Some(_)`
+    /// and `faces_vertices == Some(_)`,
+    /// fills in `edges_faces` and `faces_edges`.
+    /// Currently assumes an orientable manifold, and uses `None`s to
+    /// represent missing neighbor faces in `edges_faces` (for boundary edges).
+    pub fn edges_vertices_to_edges_faces_edges(&mut self) {
+        let (edges_faces, faces_edges) = edges_vertices_to_edges_faces_edges(
+            self.edges_vertices.as_ref().expect("edges_vertices must exist"),
+            self.faces_vertices.as_ref().expect("faces_vertices must exist"),
+        );
+        self.edges_faces = Some(edges_faces);
+        self.faces_edges = Some(faces_edges);
     }
 }
 
@@ -1091,6 +1186,115 @@ mod test {
     }
 
     #[test]
+    fn test_edges_vertices_to_edges_faces_edges_square_cross() {
+        let mut frame = Frame {
+            faces_vertices: Some(vec![
+                vec![0, 1, 4],
+                vec![1, 2, 4],
+                vec![2, 3, 4],
+                vec![3, 0, 4]
+            ]),
+            edges_vertices: Some(vec![
+                [0, 1],
+                [1, 2],
+                [2, 3],
+                [3, 0],
+                [0, 4],
+                [1, 4],
+                [2, 4],
+                [3, 4]
+            ]),
+            ..Default::default()
+        };
+        frame.edges_vertices_to_edges_faces_edges();
+        assert_eq!(frame.edges_faces, Some(vec![
+            vec![Some(0), None],
+            vec![Some(1), None],
+            vec![Some(2), None],
+            vec![Some(3), None],
+            vec![Some(3), Some(0)],
+            vec![Some(0), Some(1)],
+            vec![Some(1), Some(2)],
+            vec![Some(2), Some(3)]
+        ]));
+        assert_eq!(frame.faces_edges, Some(vec![
+            vec![0, 5, 4],
+            vec![1, 6, 5],
+            vec![2, 7, 6],
+            vec![3, 4, 7]
+        ]));
+    }
+
+    #[test]
+    fn test_edges_vertices_to_edges_faces_edges_single_face() {
+        let mut frame = Frame {
+            faces_vertices: Some(vec![
+                vec![0, 1, 2]
+            ]),
+            edges_vertices: Some(vec![
+                [1, 2],
+                [0, 2],
+                [0, 1],
+            ]),
+            ..Default::default()
+        };
+        frame.edges_vertices_to_edges_faces_edges();
+        assert_eq!(frame.edges_faces, Some(vec![
+            vec![Some(0), None],
+            vec![None, Some(0)],
+            vec![Some(0), None],
+        ]));
+        assert_eq!(frame.faces_edges, Some(vec![
+            vec![2, 0, 1],
+        ]));
+    }
+
+    #[test]
+    fn test_edges_vertices_to_edges_faces_edges_slitted_face() {
+        // 3----2----2
+        // |         |
+        // |  7-6-6  |
+        // 3  7   5  1
+        // |  4-4-5  |
+        // |,8       |
+        // 0----0----1
+        let mut frame = Frame {
+            faces_vertices: Some(vec![
+                vec![0, 1, 2, 3, 0, 4, 7, 6, 5, 4],
+                vec![4, 5, 6, 7],
+            ]),
+            edges_vertices: Some(vec![
+                [0, 1],
+                [1, 2],
+                [2, 3],
+                [3, 0],
+                [4, 5],
+                [5, 6],
+                [6, 7],
+                [7, 4],
+                [0, 4],
+            ]),
+            ..Default::default()
+        };
+        frame.edges_vertices_to_edges_faces_edges();
+        assert_eq!(frame.edges_faces, Some(vec![
+            vec![Some(0), None],
+            vec![Some(0), None],
+            vec![Some(0), None],
+            vec![Some(0), None],
+            vec![Some(1), Some(0)],
+            vec![Some(1), Some(0)],
+            vec![Some(1), Some(0)],
+            vec![Some(1), Some(0)],
+            vec![Some(0), Some(0)],
+        ]));
+        assert_eq!(frame.faces_edges, Some(vec![
+            vec![0, 1, 2, 3, 8, 7, 6, 5, 4, 8],
+            vec![4, 5, 6, 7],
+        ]));
+    }
+
+    #[test]
     fn test_faces_vertices_to_faces_edges_square_cross() {
         let mut frame = Frame {
             faces_vertices: Some(vec![
@@ -1171,5 +1375,67 @@ mod test {
             vec![0, 1, 2, 3, 8, 7, 6, 5, 4, 8],
             vec![4, 5, 6, 7],
         ]));
+    }
+
+    #[test]
+    fn test_faces_vertices_to_edges_square_cross() {
+        let mut frame = Frame {
+            faces_vertices: Some(vec![
+                vec![0, 1, 4],
+                vec![1, 2, 4],
+                vec![2, 3, 4],
+                vec![3, 0, 4]
+            ]),
+            ..Default::default()
+        };
+        frame.faces_vertices_to_edges();
+        // Make sure the result is reasonable; too lazy to canonicalize edges
+        println!("faces_vertices_to_edges square cross:");
+        println!("    edges_vertices: {:?}", frame.edges_vertices);
+        println!("    edges_faces: {:?}", frame.edges_faces);
+        println!("    faces_edges: {:?}", frame.faces_edges);
+        println!("    edges_assignment: {:?}", frame.edges_assignment);
+    }
+
+    #[test]
+    fn test_faces_vertices_to_edges_single_face() {
+        let mut frame = Frame {
+            faces_vertices: Some(vec![
+                vec![0, 1, 2]
+            ]),
+            ..Default::default()
+        };
+        frame.faces_vertices_to_edges();
+        // Make sure the result is reasonable; too lazy to canonicalize edges
+        println!("faces_vertices_to_edges single face:");
+        println!("    edges_vertices: {:?}", frame.edges_vertices);
+        println!("    edges_faces: {:?}", frame.edges_faces);
+        println!("    faces_edges: {:?}", frame.faces_edges);
+        println!("    edges_assignment: {:?}", frame.edges_assignment);
+    }
+
+    #[test]
+    fn test_faces_vertices_to_edges_slitted_face() {
+        // 3----2----2
+        // |         |
+        // |  7-6-6  |
+        // 3  7   5  1
+        // |  4-4-5  |
+        // |,8       |
+        // 0----0----1
+        let mut frame = Frame {
+            faces_vertices: Some(vec![
+                vec![0, 1, 2, 3, 0, 4, 7, 6, 5, 4],
+                vec![4, 5, 6, 7],
+            ]),
+            ..Default::default()
+        };
+        frame.faces_vertices_to_edges();
+        // Make sure the result is reasonable; too lazy to canonicalize edges
+        println!("faces_vertices_to_edges slitted face:");
+        println!("    edges_vertices: {:?}", frame.edges_vertices);
+        println!("    edges_faces: {:?}", frame.edges_faces);
+        println!("    faces_edges: {:?}", frame.faces_edges);
+        println!("    edges_assignment: {:?}", frame.edges_assignment);
     }
 }

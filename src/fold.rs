@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// A subjective interpretation about what the entire file represents.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FileClass {
@@ -44,12 +44,22 @@ pub struct Fold {
     pub file_description: Option<String>,
     /// A subjective interpretation about what the entire file represents.
     pub file_classes: Vec<FileClass>,
-    /// The key frame in the file; the one that isn't in a separate struct
-    pub key_frame: Frame,
-    /// The frames in the file
+    /// The frames in the file. The key frame is frame 0.
     pub file_frames: Vec<Frame>,
     /// Custom data
     pub file_custom: IndexMap<String, Value>,
+}
+
+impl Fold {
+    /// Gets the key frame, a.k.a. frame 0.
+    pub fn key_frame(&self) -> &Frame {
+        &self.file_frames[0]
+    }
+
+    /// Gets the key frame, a.k.a. frame 0, mutably
+    pub fn key_frame_mut(&mut self) -> &mut Frame {
+        &mut self.file_frames[0]
+    }
 }
 
 impl Default for Fold {
@@ -61,7 +71,6 @@ impl Default for Fold {
             file_title: Default::default(),
             file_description: Default::default(),
             file_classes: Default::default(),
-            key_frame: Default::default(),
             file_frames: Default::default(),
             file_custom: Default::default(),
         }
@@ -69,7 +78,7 @@ impl Default for Fold {
 }
 
 /// A subjective interpretation about what the frame represents.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FrameClass {
@@ -87,7 +96,7 @@ pub enum FrameClass {
 
 /// Attribute that objectively describes a property of the
 /// folded structure being represented.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FrameAttribute {
@@ -133,7 +142,7 @@ pub enum FrameAttribute {
 }
 
 /// Physical or logical unit that all coordinates are relative to.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[derive(Serialize, Deserialize)]
 pub enum FrameUnit {
     /// (equivalent to not specifying a unit): no physical meaning
@@ -176,7 +185,7 @@ impl FrameUnit {
 }
 
 /// For each edge, a string representing its fold direction assignment
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[derive(Serialize, Deserialize)]
 pub enum EdgeAssignment {
     /// border/boundary edge (only one incident face)
@@ -241,6 +250,14 @@ impl<'a> CoordsRef<'a> {
             CoordsRef::Approx(c) => c.ncols(),
         }
     }
+
+    /// Gets the number of dimensions.
+    pub fn num_dimensions(&self) -> usize {
+        match self {
+            CoordsRef::Exact(c) => c.nrows(),
+            CoordsRef::Approx(c) => c.nrows(),
+        }
+    }
 }
 
 /// A FOLD frame, containing geometry information.
@@ -262,6 +279,17 @@ pub struct Frame {
     pub frame_classes: Vec<FrameClass>,
     /// Attributes that objectively describe properties of the
     /// folded structure being represented.
+    /// 
+    /// # Requirements
+    /// * At most 1 of `_2D`, `_3D`, and `_Abstract` are set.
+    /// * `Manifold` and `NotManifold` are not both set.
+    /// * `Orientable` and `NotManifold` are not both set.
+    /// * `Orientable` and `NotOrientable` are not both set.
+    /// * `SelfTouching` and `NotSelfTouching` are not both set.
+    /// * `SelfIntersecting` and `NotSelfIntersecting` are not both set.
+    /// * `Cuts` and `NoCuts` are not both set.
+    /// * `Joins` and `NoJoints` are not both set.
+    /// * `ConvexFaces` and `NoConvexFaces` are not both set.
     pub frame_attributes: Vec<FrameAttribute>,
     /// Physical or logical unit that all coordinates are relative to
     pub frame_unit: FrameUnit,
@@ -274,26 +302,29 @@ pub struct Frame {
     /// In higher dimensions, all trailing unspecified coordinates are implicitly
     /// zero.
     /// Vertex coordinates are columns.
+    /// 
     /// **Recommended** except for frames with attribute `Abstract`.
+    /// 
+    /// # Requirements
+    /// * **Exists** if `FrameAttribute::_2D` or `FrameAttribute::_3D` is set
+    ///   and `vertices_coords_exact == None`.
+    /// * If `FrameAttribute::_2D` or `FrameAttribute::_3D` is set,
+    ///   the coordinate dimensions match the attribute.
     pub vertices_coords_f64: Option<DMatrix<f64>>,
     /// For each vertex, an array of exact coordinates,
     /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
     /// In higher dimensions, all trailing unspecified coordinates are implicitly
     /// zero.
     /// Vertex coordinates are columns.
+    /// 
     /// **Recommended** except for frames with attribute `Abstract`.
+    /// 
+    /// # Requirements
+    /// * If `FrameAttribute::_2D` or `FrameAttribute::_3D` is set,
+    ///   the coordinate dimensions match the attribute.
     pub vertices_coords_exact: Option<DMatrix<BasedExpr>>,
-    /// For each vertex, an array of vertices (vertex IDs)
-    /// that are adjacent along edges.  If the frame represents an orientable
-    /// manifold or planar linkage, this list should be ordered counterclockwise
-    /// around the vertex (possibly repeating a vertex more than once).
-    /// If the frame is a nonorientable manifold, this list should be cyclically
-    /// ordered around the vertex (possibly repeating a vertex).
-    /// Otherwise, the order is arbitrary.
-    /// **Recommended** in any frame lacking `edges_vertices` property
-    /// (otherwise `vertices_vertices` can easily be computed from
-    /// `edges_vertices` as needed).
-    pub vertices_vertices: Option<Vec<Vec<usize>>>,
+    /// The number of vertices. Necessary to handle isolated vertices.
+    pub num_vertices: usize,
     /// For each vertex, an array of edge IDs for the edges
     /// incident to the vertex.  If the frame represents an orientable manifold,
     /// this list should be ordered counterclockwise around the vertex.
@@ -302,32 +333,18 @@ pub struct Frame {
     /// In all cases, the linear order should match `vertices_vertices` if both
     /// are specified: `vertices_edges[v][i]` should be an edge connecting vertices
     /// `v` and `vertices_vertices[v][i]`.
+    /// 
+    /// This should be calculated from `edges_vertices`.
     pub vertices_edges: Option<Vec<Vec<usize>>>,
-    /// For each vertex, an array of face IDs for the faces
-    /// incident to the vertex, possibly including `None`s.
-    /// If the frame represents a manifold, `vertices_faces` should align with
-    /// `vertices_vertices` and/or `vertices_edges`:
-    /// `vertices_faces[v][i]` should be either
-    ///
-    /// * the face containing vertices
-    ///   `vertices_vertices[v][i]` and `vertices_vertices[v][(i+1)%d]` and
-    ///   containing edges `vertices_edges[v][i]` and `vertices_edges[v][(i+1)%d]`,
-    ///   where `d` is the degree of vertex `v`; or
-    /// * `None` if such a face doesn't exist.
-    ///
-    /// If the frame represents an orientable manifold,
-    /// this list should be ordered counterclockwise around the vertex
-    /// (possibly repeating a face more than once).  If the frame is a
-    /// nonorientable manifold, this list should be cyclically ordered around the
-    /// vertex (possibly repeating a vertex), and matching the cyclic order of
-    /// `vertices_vertices` and/or `vertices_edges` (if either is specified).
-    pub vertices_faces: Option<Vec<Vec<Option<usize>>>>,
     /// `edges_vertices`: For each edge, an array `[u, v]` of two vertex IDs for
     /// the two endpoints of the edge.  This effectively defines the *orientation*
     /// of the edge, from `u` to `v`.  (This orientation choice is arbitrary,
     /// but is used to define the ordering of `edges_faces`.)
     /// **Recommended** in frames having any `edges_...` property
     /// (e.g., to represent mountain-valley assignment).
+    /// 
+    /// # Requirements
+    /// * No edge can repeat a vertex. (no self-loops)
     pub edges_vertices: Option<Vec<[usize; 2]>>,
     /// For each edge, an array of face IDs for the faces incident
     /// to the edge, possibly including `None`s.
@@ -342,6 +359,8 @@ pub struct Frame {
     /// manifold orientation given by the counterclockwise orientation of faces.
     /// However, a boundary edge may also be represented by a length-1 array, with
     /// the `None` omitted, to be consistent with the nonmanifold representation.
+    /// 
+    /// This should be calculated from `faces_edges`.
     pub edges_faces: Option<Vec<Vec<Option<usize>>>>,
     /// For each edge, a string representing its fold direction assignment
     pub edges_assignment: Option<Vec<EdgeAssignment>>,
@@ -371,25 +390,15 @@ pub struct Frame {
     /// otherwise, `edges_length` can be computed from `vertices_coords`.
     pub edges_length2_exact: Option<Vec<BasedExpr>>,
 
-    /// For each face, an array of vertex IDs for the vertices
-    /// around the face *in counterclockwise order*.  This array can repeat the
-    /// same vertex multiple times (e.g., if the face has a "slit" in it).
-    /// **Recommended** in any frame having faces.
-    pub faces_vertices: Option<Vec<Vec<usize>>>,
     /// For each face, an array of edge IDs for the edges around
     /// the face *in counterclockwise order*.  In addition to the matching cyclic
     /// order, `faces_vertices` and `faces_edges` should align in start so that
     /// `faces_edges[f][i]` is the edge connecting `faces_vertices[f][i]` and
     /// `faces_vertices[f][(i+1)%d]` where `d` is the degree of face `f`.
+    /// 
+    /// # Requirements
+    /// * For each face, adjacent edges (including the (last, first) pair) must have a shared vertex.
     pub faces_edges: Option<Vec<Vec<usize>>>,
-    /// `faces_faces`: For each face, an array of face IDs for the faces *sharing
-    /// edges* around the face, possibly including `null`s.
-    /// If the frame is a manifold, the faces should be listed in counterclockwise
-    /// order and in the same linear order as `faces_edges` (if it is specified):
-    /// `f` and `faces_faces[f][i]` should be the faces incident to the edge
-    /// `faces_edges[f][i]`, unless that edge has no face on the other side,
-    /// in which case `faces_faces[f][i]` should be `null`.
-    pub faces_faces: Option<Vec<Vec<Option<usize>>>>,
     
     /// An array of triples `(f, g, s)` where `f` and `g` are face IDs
     /// and `s` is a `FaceOrder`:
@@ -445,11 +454,10 @@ impl Default for Frame {
             frame_attributes: Default::default(),
             frame_unit: FrameUnit::Unit,
             basis: Default::default(),
+            num_vertices: Default::default(),
             vertices_coords_f64: Default::default(),
             vertices_coords_exact: Default::default(),
-            vertices_vertices: Default::default(),
             vertices_edges: Default::default(),
-            vertices_faces: Default::default(),
             edges_vertices: Default::default(),
             edges_faces: Default::default(),
             edges_assignment: Default::default(),
@@ -457,9 +465,7 @@ impl Default for Frame {
             edges_fold_angle_cs: Default::default(),
             edges_length_f64: Default::default(),
             edges_length2_exact: Default::default(),
-            faces_vertices: Default::default(),
             faces_edges: Default::default(),
-            faces_faces: Default::default(),
             face_orders: Default::default(),
             edge_orders: Default::default(),
             frame_parent: Default::default(),
