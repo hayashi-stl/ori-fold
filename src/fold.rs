@@ -390,15 +390,18 @@ pub struct Frame {
     /// otherwise, `edges_length` can be computed from `vertices_coords`.
     pub edges_length2_exact: Option<Vec<BasedExpr>>,
 
-    /// For each face, an array of edge IDs for the edges around
-    /// the face *in counterclockwise order*.  In addition to the matching cyclic
-    /// order, `faces_vertices` and `faces_edges` should align in start so that
-    /// `faces_edges[f][i]` is the edge connecting `faces_vertices[f][i]` and
-    /// `faces_vertices[f][(i+1)%d]` where `d` is the degree of face `f`.
+    /// For each face, an array of (vertex ID, edge ID)s for the edges around
+    /// the face *in counterclockwise order*.
+    /// `faces_edges[f][i].0` is the first vertex of the edge according to the face.
+    /// 
+    /// The reason for also storing vertices is to handle non-simple graphs more easily.
     /// 
     /// # Requirements
-    /// * For each face, adjacent edges (including the (last, first) pair) must have a shared vertex.
-    pub faces_edges: Option<Vec<Vec<usize>>>,
+    /// * For each face, `faces_edges[f][i].0` is contained in edge `faces_edges[f][i].1`
+    /// * For each face, if vertex list `edges_vertices[faces_edges[f][i].1]` and edge `edges_vertices[faces_edges[f][(i+1)%n].1]`
+    ///     are laid out, each with the respective `faces_edges[f][j].0` vertex coming first, resulting in lists `[v0, v1]` and `[v2, v3]`,
+    ///     then `v1 == v2`.
+    pub faces_vertices_edges: Option<Vec<Vec<(usize, usize)>>>,
     
     /// An array of triples `(f, g, s)` where `f` and `g` are face IDs
     /// and `s` is a `FaceOrder`:
@@ -465,7 +468,7 @@ impl Default for Frame {
             edges_fold_angle_cs: Default::default(),
             edges_length_f64: Default::default(),
             edges_length2_exact: Default::default(),
-            faces_edges: Default::default(),
+            faces_vertices_edges: Default::default(),
             face_orders: Default::default(),
             edge_orders: Default::default(),
             frame_parent: Default::default(),
