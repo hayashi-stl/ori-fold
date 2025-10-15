@@ -7,8 +7,9 @@ use nalgebra::DMatrix;
 use serde::{Deserialize, Serialize};
 use serde::de::Error;
 use serde_json::{Map, Value};
+use typed_index_collections::TiVec;
 
-use crate::{fold::{EdgeAssignment, EdgeOrder, FaceOrder, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameUnit}, ser_de::basis::deserialize};
+use crate::{fold::{Edge, EdgeAssignment, EdgeOrder, Face, FaceOrder, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit, Vertex}, ser_de::basis::deserialize};
 
 mod pretty;
 mod convert;
@@ -70,8 +71,8 @@ pub struct SerDeFold {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_classes: Vec<FileClass>,
     /// The frames in the file
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub file_frames: Vec<Frame>,
+    #[serde(default, skip_serializing_if = "TiVec::is_empty")]
+    pub file_frames: TiVec<FrameIndex, Frame>,
 }
 
 #[derive(Clone, Debug)]
@@ -109,14 +110,14 @@ pub(crate) struct SerDeFrame {
     /// zero.  **Recommended** except for frames with attribute `Abstract`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "vertices_coords")]
-    pub(crate) vertices_coords_f64: Option<Vec<Vec<f64>>>,
+    pub(crate) vertices_coords_f64: Option<TiVec<Vertex, Vec<f64>>>,
     /// For each vertex, an array of exact coordinates,
     /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
     /// In higher dimensions, all trailing unspecified coordinates are implicitly
     /// zero.  **Recommended** except for frames with attribute `Abstract`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "vertices_exact:coords")]
-    pub(crate) vertices_coords_exact: Option<Vec<Vec<Vec<SerDeRat>>>>,
+    pub(crate) vertices_coords_exact: Option<TiVec<Vertex, Vec<Vec<SerDeRat>>>>,
     /// For each vertex, an array of vertices (vertex IDs)
     /// that are adjacent along edges.  If the frame represents an orientable
     /// manifold or planar linkage, this list should be ordered counterclockwise
@@ -128,7 +129,7 @@ pub(crate) struct SerDeFrame {
     /// (otherwise `vertices_vertices` can easily be computed from
     /// `edges_vertices` as needed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) vertices_vertices: Option<Vec<Vec<usize>>>,
+    pub(crate) vertices_vertices: Option<TiVec<Vertex, Vec<Vertex>>>,
     /// For each vertex, an array of edge IDs for the edges
     /// incident to the vertex.  If the frame represents an orientable manifold,
     /// this list should be ordered counterclockwise around the vertex.
@@ -138,7 +139,7 @@ pub(crate) struct SerDeFrame {
     /// are specified: `vertices_edges[v][i]` should be an edge connecting vertices
     /// `v` and `vertices_vertices[v][i]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) vertices_edges: Option<Vec<Vec<usize>>>,
+    pub(crate) vertices_edges: Option<TiVec<Vertex, Vec<Edge>>>,
     /// For each vertex, an array of face IDs for the faces
     /// incident to the vertex, possibly including `None`s.
     /// If the frame represents a manifold, `vertices_faces` should align with
@@ -158,7 +159,7 @@ pub(crate) struct SerDeFrame {
     /// vertex (possibly repeating a vertex), and matching the cyclic order of
     /// `vertices_vertices` and/or `vertices_edges` (if either is specified).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) vertices_faces: Option<Vec<Vec<Option<usize>>>>,
+    pub(crate) vertices_faces: Option<TiVec<Vertex, Vec<Option<Face>>>>,
     /// `edges_vertices`: For each edge, an array `[u, v]` of two vertex IDs for
     /// the two endpoints of the edge.  This effectively defines the *orientation*
     /// of the edge, from `u` to `v`.  (This orientation choice is arbitrary,
@@ -166,7 +167,7 @@ pub(crate) struct SerDeFrame {
     /// **Recommended** in frames having any `edges_...` property
     /// (e.g., to represent mountain-valley assignment).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) edges_vertices: Option<Vec<[usize; 2]>>,
+    pub(crate) edges_vertices: Option<TiVec<Edge, [Vertex; 2]>>,
     /// For each edge, an array of face IDs for the faces incident
     /// to the edge, possibly including `None`s.
     /// For nonmanifolds in particular, the `Some()` faces should be listed in
@@ -181,10 +182,10 @@ pub(crate) struct SerDeFrame {
     /// However, a boundary edge may also be represented by a length-1 array, with
     /// the `None` omitted, to be consistent with the nonmanifold representation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) edges_faces: Option<Vec<Vec<Option<usize>>>>,
+    pub(crate) edges_faces: Option<TiVec<Edge, Vec<Option<Face>>>>,
     /// For each edge, a string representing its fold direction assignment
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) edges_assignment: Option<Vec<EdgeAssignment>>,
+    pub(crate) edges_assignment: Option<TiVec<Edge, EdgeAssignment>>,
     /// For each edge, the fold angle (deviation from flatness)
     /// along each edge of the pattern.  The fold angle is a number in degrees
     /// lying in the range [-180, 180].  The fold angle is positive for
@@ -196,13 +197,13 @@ pub(crate) struct SerDeFrame {
     /// with `N` is tricky. `[cos(a), sin(a)]` doesn't work because -180° and 180° are both in range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edges_foldAngle")]
-    pub(crate) edges_fold_angle_f64: Option<Vec<f64>>,
+    pub(crate) edges_fold_angle_f64: Option<TiVec<Edge, f64>>,
     /// For each edge, the *exact* fold angle (deviation from flatness)
     /// along each edge of the pattern, written as `(negative?, cos(a), sin(a))`.
     /// Both `cos(a)` and `sin(a)` are stored to ensure they're both in `N`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edges_exact:foldAngle")]
-    pub(crate) edges_fold_angle_cs: Option<Vec<(bool, Vec<SerDeRat>, Vec<SerDeRat>)>>,
+    pub(crate) edges_fold_angle_cs: Option<TiVec<Edge, (bool, Vec<SerDeRat>, Vec<SerDeRat>)>>,
 
     /// For each edge, the approximate length of the edge.
     /// This is mainly useful for defining the intrinsic geometry of
@@ -210,28 +211,28 @@ pub(crate) struct SerDeFrame {
     /// otherwise, `edges_length` can be computed from `vertices_coords`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edges_length")]
-    pub(crate) edges_length_f64: Option<Vec<f64>>,
+    pub(crate) edges_length_f64: Option<TiVec<Edge, f64>>,
     /// For each edge, the exact squared length of the edge.
     /// This is mainly useful for defining the intrinsic geometry of
     /// abstract complexes where `vertices_coords` are unspecified;
     /// otherwise, `edges_length` can be computed from `vertices_coords`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edges_exact:length2")]
-    pub(crate) edges_length2_exact: Option<Vec<Vec<SerDeRat>>>,
+    pub(crate) edges_length2_exact: Option<TiVec<Edge, Vec<SerDeRat>>>,
 
     /// For each face, an array of vertex IDs for the vertices
     /// around the face *in counterclockwise order*.  This array can repeat the
     /// same vertex multiple times (e.g., if the face has a "slit" in it).
     /// **Recommended** in any frame having faces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) faces_vertices: Option<Vec<Vec<usize>>>,
+    pub(crate) faces_vertices: Option<TiVec<Face, Vec<Vertex>>>,
     /// For each face, an array of edge IDs for the edges around
     /// the face *in counterclockwise order*.  In addition to the matching cyclic
     /// order, `faces_vertices` and `faces_edges` should align in start so that
     /// `faces_edges[f][i]` is the edge connecting `faces_vertices[f][i]` and
     /// `faces_vertices[f][(i+1)%d]` where `d` is the degree of face `f`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) faces_edges: Option<Vec<Vec<usize>>>,
+    pub(crate) faces_edges: Option<TiVec<Face, Vec<Edge>>>,
     /// `faces_faces`: For each face, an array of face IDs for the faces *sharing
     /// edges* around the face, possibly including `null`s.
     /// If the frame is a manifold, the faces should be listed in counterclockwise
@@ -240,7 +241,7 @@ pub(crate) struct SerDeFrame {
     /// `faces_edges[f][i]`, unless that edge has no face on the other side,
     /// in which case `faces_faces[f][i]` should be `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) faces_faces: Option<Vec<Vec<Option<usize>>>>,
+    pub(crate) faces_faces: Option<TiVec<Face, Vec<Option<Face>>>>,
     
     /// An array of triples `(f, g, s)` where `f` and `g` are face IDs
     /// and `s` is a `FaceOrder`:
@@ -254,7 +255,7 @@ pub(crate) struct SerDeFrame {
     /// **Recommended** for frames with interior-overlapping faces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "faceOrders")]
-    pub(crate) face_orders: Option<Vec<(usize, usize, FaceOrder)>>,
+    pub(crate) face_orders: Option<Vec<(Face, Face, FaceOrder)>>,
     /// An array of triples `[e, f, s]` where `e` and `f` are edge IDs
     /// and `s` is a `EdgeOrder`.
     /// * `Left` indicates that edge `e` lies locally on the *left* side of edge `f`
@@ -268,14 +269,14 @@ pub(crate) struct SerDeFrame {
     /// **Recommended** for linkage configurations with interior-overlapping edges.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edgeOrders")]
-    pub(crate) edge_orders: Option<Vec<(usize, usize, EdgeOrder)>>,
+    pub(crate) edge_orders: Option<Vec<(Edge, Edge, EdgeOrder)>>,
 
     /// Parent frame ID.  Intuitively, this frame (the child)
     /// is a modification (or, in general, is related to) the parent frame.
     /// This property is optional, but enables organizing frames into a tree
     /// structure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) frame_parent: Option<usize>,
+    pub(crate) frame_parent: Option<FrameIndex>,
     /// If true, any properties in the parent frame
     /// (or recursively inherited from an ancestor) that is not overridden in
     /// this frame are automatically inherited, allowing you to avoid duplicated
@@ -315,25 +316,26 @@ impl TryFrom<SerDeFrame> for Frame {
         for (key, value) in frame_custom {
             if key.starts_with("vertices_") {
                 let array = if let Value::Array(v) = value { v } else { Err(format!("{key} must be an array"))? };
-                vertices_custom.insert(key.replacen("vertices_", "", 1), array);
+                vertices_custom.insert(key.replacen("vertices_", "", 1), array.into());
             } else if key.starts_with("edges_") {
                 let array = if let Value::Array(v) = value { v } else { Err(format!("{key} must be an array"))? };
-                edges_custom.insert(key.replacen("edges_", "", 1), array);
+                edges_custom.insert(key.replacen("edges_", "", 1), array.into());
             } else if key.starts_with("faces_") {
                 let array = if let Value::Array(v) = value { v } else { Err(format!("{key} must be an array"))? };
-                faces_custom.insert(key.replacen("faces_", "", 1), array);
+                faces_custom.insert(key.replacen("faces_", "", 1), array.into());
             } else {
                 other_custom.insert(key, value);
             }
         }
-        let num_vertices = value.num_vertices(&vertices_custom)
+        let vertices_meta = value.num_vertices(&vertices_custom)
             .map_err(|e| e.into_iter().map(|e| format!("{e}\n")).collect::<String>())?;
-        let num_edges = value.num_edges(&edges_custom)
+        let edges_meta = value.num_edges(&edges_custom)
             .map_err(|e| e.into_iter().map(|e| format!("{e}\n")).collect::<String>())?;
-        let num_faces = value.num_faces(&faces_custom)
+        let faces_meta = value.num_faces(&faces_custom)
             .map_err(|e| e.into_iter().map(|e| format!("{e}\n")).collect::<String>())?;
-        let (value, vertices_edges, edges_vertices, edges_faces, faces_vertices_edges) =
-            match value.extract_topology(num_vertices, num_edges, Some(todo!())) {
+        let num_vertices = vertices_meta.as_ref().map(|&(n, _)| n).unwrap_or(0);
+        let (value, vertices_edges, edges_vertices, edges_faces, faces_half_edges) =
+            match value.extract_topology(vertices_meta, edges_meta, faces_meta) {
             Ok(t) => t,
             Err(e) => Err(e.into_iter().map(|e| format!("{e:?}\n")).collect::<String>())?
         };
@@ -346,7 +348,7 @@ impl TryFrom<SerDeFrame> for Frame {
             frame_attributes: value.frame_attributes,
             frame_unit: value.frame_unit,
             basis: value.basis.clone(),
-            num_vertices: num_vertices.map(|(n, _)| n).unwrap_or(0),
+            num_vertices,
             vertices_coords_f64: value.vertices_coords_f64
                 .map(|vs| {
                     let num_rows = vs.iter().map(|v| v.len()).max().unwrap_or(0);
@@ -372,7 +374,7 @@ impl TryFrom<SerDeFrame> for Frame {
                         .map(|vs| DMatrix::from_vec(num_rows, num_cols, vs))
                 })
                 .transpose()?,
-            vertices_edges,
+            vertices_half_edges: vertices_edges,
             edges_vertices,
             edges_faces,
             edges_assignment: value.edges_assignment,
@@ -384,14 +386,14 @@ impl TryFrom<SerDeFrame> for Frame {
                         based_expr_from_de(cos, value.basis.as_ref().unwrap().clone())
                             .and_then(|cos| based_expr_from_de(sin, value.basis.as_ref().unwrap().clone()).map(|sin| (cos, sin)))
                             .map(|(cos, sin)| (sign, cos, sin)))
-                    .collect::<Result<Vec<_>, _>>())
+                    .collect::<Result<TiVec<_, _>, _>>())
                 .transpose()?,
             edges_length2_exact: value.edges_length2_exact
                 .map(|ls| ls.into_iter()
                     .map(|c| based_expr_from_de(c, value.basis.as_ref().unwrap().clone()))
-                    .collect::<Result<Vec<_>, _>>())
+                    .collect::<Result<TiVec<_, _>, _>>())
                 .transpose()?,
-            faces_vertices_edges,
+            faces_half_edges,
             face_orders: value.face_orders,
             edge_orders: value.edge_orders,
             frame_parent: value.frame_parent,
@@ -434,11 +436,11 @@ impl From<Frame> for SerDeFrame {
             vertices_coords_f64: value.vertices_coords_f64
                 .map(|vs| vs.column_iter()
                     .map(|v| v.into_iter().copied().collect::<Vec<_>>())
-                    .collect::<Vec<_>>()),
+                    .collect::<TiVec<_, _>>()),
             vertices_coords_exact: value.vertices_coords_exact
                 .map(|mut vs| vs.column_iter_mut()
                     .map(|v| v.into_iter().map(std::mem::take).map(based_expr_to_ser).collect::<Vec<_>>())
-                    .collect::<Vec<_>>()),
+                    .collect::<TiVec<_, _>>()),
             vertices_vertices,
             vertices_edges,
             vertices_faces,
@@ -451,9 +453,9 @@ impl From<Frame> for SerDeFrame {
                 .map(|ls| ls.into_iter()
                     .map(|(sign, cos, sin)|
                         (sign, based_expr_to_ser(cos), based_expr_to_ser(sin)))
-                    .collect::<Vec<_>>()),
+                    .collect::<TiVec<_, _>>()),
             edges_length2_exact: value.edges_length2_exact
-                .map(|ls| ls.into_iter().map(based_expr_to_ser).collect::<Vec<_>>()),
+                .map(|ls| ls.into_iter().map(based_expr_to_ser).collect::<TiVec<_, _>>()),
             faces_vertices,
             faces_edges,
             faces_faces,
@@ -461,9 +463,9 @@ impl From<Frame> for SerDeFrame {
             edge_orders: value.edge_orders,
             frame_parent: value.frame_parent,
             frame_inherit: value.frame_inherit,
-            frame_custom: value.vertices_custom.into_iter().map(|(k, v)| (format!("vertices_{k}"), Value::Array(v)))
-                .chain(value.edges_custom.into_iter().map(|(k, v)| (format!("edges_{k}"), Value::Array(v))))
-                .chain(value.faces_custom.into_iter().map(|(k, v)| (format!("faces_{k}"), Value::Array(v))))
+            frame_custom: value.vertices_custom.into_iter().map(|(k, v)| (format!("vertices_{k}"), Value::Array(v.into())))
+                .chain(value.edges_custom.into_iter().map(|(k, v)| (format!("edges_{k}"), Value::Array(v.into()))))
+                .chain(value.faces_custom.into_iter().map(|(k, v)| (format!("faces_{k}"), Value::Array(v.into()))))
                 .chain(value.other_custom)
                 .collect::<Map<_, _>>()
         }
@@ -493,9 +495,9 @@ impl Fold {
             if let Some(c) = &self.file_title       { Some(("file_title"      .to_owned(), serde_json::to_value(c)?)) } else { None },
             if let Some(c) = &self.file_description { Some(("file_description".to_owned(), serde_json::to_value(c)?)) } else { None },
             if self.file_classes.len() > 0          { Some(("file_classes"    .to_owned(), serde_json::to_value(&self.file_classes)?)) } else { None },
-            if self.file_frames .len() > 1          { Some(("file_frames"     .to_owned(), serde_json::to_value(&self.file_frames[1..])?)) } else { None },
+            if self.file_frames .len() > 1          { Some(("file_frames"     .to_owned(), serde_json::to_value(&self.file_frames[FrameIndex(1)..])?)) } else { None },
         ].into_iter().flatten().collect::<Vec<_>>();
-        let key_frame = serde_json::to_value(&self.file_frames[0])?;
+        let key_frame = serde_json::to_value(&self.file_frames.first().unwrap())?;
         let key_frame = if let Value::Object(k) = key_frame { k } else { unreachable!() };
         let file_custom = serde_json::to_value(&self.file_custom)?;
         let file_custom = if let Value::Object(k) = file_custom { k } else { unreachable!() };
@@ -514,7 +516,7 @@ impl Fold {
         // with a double deserialize!
         let mut fold = serde_json::de::from_str::<SerDeFold>(s)?;
         let key_frame = serde_json::de::from_str::<Frame>(s)?;
-        fold.file_frames.insert(0, key_frame);
+        fold.file_frames.insert(FrameIndex(0), key_frame);
         let mut fold = Fold {
             file_spec: fold.file_spec,
             file_creator: fold.file_creator,

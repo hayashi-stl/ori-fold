@@ -12,3 +12,5 @@ indexmap = { version = "2.11.4", features = ["serde"] }
 nalgebra = "0.34.1"
 num-traits = "0.2.19"
 float-ord = "0.3.2"
+typed-index-collections = { version = "3.3.0", features = ["serde"] }
+derive_more = { version = "2.0.1", features = ["from", "into", "add", "add_assign", "mul", "mul_assign"] }
