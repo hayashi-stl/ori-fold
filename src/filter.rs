@@ -18,6 +18,8 @@ pub fn edges_vertices_incident(e1: [Vertex; 2], e2: [Vertex; 2]) -> Option<Verte
 
 /// Given two vertices defined by their half-edges, gets the half-edges incident to both of them.
 /// The half-edges point in the v1->v2 direction.
+/// 
+/// Make sure the vertices aren't the exact same vertex before calling this.
 pub fn vertices_half_edges_incident(v1: &[HalfEdge], v2: &[HalfEdge]) -> Vec<HalfEdge> {
     v1.iter().copied().filter(|h1| v2.iter().find(|h2| h2.edge() == h1.edge()).is_some()).collect::<Vec<_>>()
 }
