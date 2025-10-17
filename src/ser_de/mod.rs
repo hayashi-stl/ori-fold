@@ -337,7 +337,7 @@ impl TryFrom<SerDeFrame> for Frame {
         let (value, vertices_edges, edges_vertices, edges_faces, faces_half_edges) =
             match value.extract_topology(vertices_meta, edges_meta, faces_meta) {
             Ok(t) => t,
-            Err(e) => Err(e.into_iter().map(|e| format!("{e:?}\n")).collect::<String>())?
+            Err(e) => Err(e.into_iter().map(|e| format!("{e}\n")).collect::<String>())?
         };
 
         Ok(Self {
@@ -376,7 +376,7 @@ impl TryFrom<SerDeFrame> for Frame {
                 .transpose()?,
             vertices_half_edges: vertices_edges,
             edges_vertices,
-            edges_faces,
+            edges_face_corners: edges_faces,
             edges_assignment: value.edges_assignment,
             edges_fold_angle_f64: value.edges_fold_angle_f64,
             edges_length_f64: value.edges_length_f64,
@@ -587,527 +587,529 @@ pub mod basis {
     }
 }
 
-//#[cfg(test)]
-//mod test {
-//    use indexmap::IndexMap;
-//    use exact_number::{based_expr, basis::{ArcBasis, Basis}, sqrt_expr};
-//    use nalgebra::DMatrix;
-//    use serde_json::{json, Value};
-//
-//    use crate::fold::{EdgeAssignment, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameUnit};
-//
-//    #[test]
-//    fn test_load_partial_metadata() {
-//        let fold = Fold::from_file("test/x.fold").unwrap();
-//        assert_eq!(fold.file_spec, "1.1");
-//        assert_eq!(fold.file_creator, Some("oriedita".to_owned()));
-//        assert_eq!(fold.file_author, None);
-//        assert_eq!(fold.file_title, None);
-//        assert_eq!(fold.file_description, None);
-//        assert_eq!(fold.file_classes, vec![]);
-//        assert_eq!(fold.file_custom, vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
-//    }
-//
-//    #[test]
-//    fn test_load_full_metadata() {
-//        let fold = Fold::from_file("test/x-all-file-metadata.fold").unwrap();
-//        assert_eq!(fold.file_spec, "1.1");
-//        assert_eq!(fold.file_creator, Some("oriedita".to_owned()));
-//        assert_eq!(fold.file_author, Some("hayastl".to_owned()));
-//        assert_eq!(fold.file_title, Some("x".to_owned()));
-//        assert_eq!(fold.file_description, Some("a simple cross pattern".to_owned()));
-//        assert_eq!(fold.file_classes, vec![FileClass::SingleModel]);
-//        assert_eq!(fold.file_custom, vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
-//    }
-//
-//    #[test]
-//    fn test_load_exact_coords() {
-//        let fold = Fold::from_file("test/x-exact-coords.fold").unwrap();
-//        let basis = Basis::new_arc(vec![sqrt_expr!(1)]);
-//        let coords = DMatrix::from_vec(2, 5, vec![
-//            based_expr!(-200), based_expr!(-200),
-//            based_expr!(-200), based_expr!(200),
-//            based_expr!(200), based_expr!(-200),
-//            based_expr!(200), based_expr!(200),
-//            based_expr!(0), based_expr!(0),
-//        ]);
-//        assert_eq!(fold.key_frame().basis, Some(basis));
-//        assert_eq!(fold.key_frame().vertices_coords_exact, Some(coords));
-//    }
-//
-//    #[test]
-//    fn test_load_exact_coords_bird_base() {
-//        let fold = Fold::from_file("test/x-exact-coords-bird-base.fold").unwrap();
-//        let basis = Basis::new_arc(vec![sqrt_expr!(1), sqrt_expr!(2)]);
-//        let coords = DMatrix::from_vec(2, 9, vec![
-//            based_expr!(0 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2),
-//            based_expr!(1 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2),
-//            based_expr!(1 + 0 sqrt 2), based_expr!(1 + 0 sqrt 2),
-//            based_expr!(0 + 0 sqrt 2), based_expr!(1 + 0 sqrt 2),
-//            based_expr!(1/2 + 0 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
-//            based_expr!(1/2 + 0 sqrt 2), based_expr!(-1/2 + 1/2 sqrt 2),
-//            based_expr!(3/2 - 1/2 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
-//            based_expr!(1/2 + 0 sqrt 2), based_expr!(3/2 - 1/2 sqrt 2),
-//            based_expr!(-1/2 + 1/2 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
-//        ]);
-//        assert_eq!(fold.key_frame().basis, Some(basis));
-//        assert_eq!(fold.key_frame().vertices_coords_exact, Some(coords));
-//    }
-//
-//    #[test]
-//    fn test_load_all_fields() {
-//        let fold = Fold::from_file("test/x-all-file-data.fold").unwrap();
-//        assert_eq!(fold.file_spec, "1.1");
-//        assert_eq!(fold.file_creator, Some("oriedita".to_owned()));
-//        assert_eq!(fold.file_author, Some("hayastl".to_owned()));
-//        assert_eq!(fold.file_title, Some("x".to_owned()));
-//        assert_eq!(fold.file_description, Some("a simple cross pattern".to_owned()));
-//        assert_eq!(fold.file_classes, vec![FileClass::SingleModel]);
-//        assert_eq!(fold.file_frames[1].frame_title, Some("Nothing".to_owned()));
-//        assert_eq!(fold.file_frames[1].frame_parent, Some(0));
-//        assert_eq!(fold.file_custom, vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
-//        assert_eq!(fold.key_frame().frame_author, Some("hayastl".to_owned()));
-//        assert_eq!(fold.key_frame().frame_title, Some("The Key Frame".to_owned()));
-//        assert_eq!(fold.key_frame().frame_description, Some("the crease pattern".to_owned()));
-//        assert_eq!(fold.key_frame().frame_classes, vec![FrameClass::CreasePattern]);
-//        assert_eq!(fold.key_frame().frame_attributes, vec![FrameAttribute::_2D, FrameAttribute::Manifold, FrameAttribute::Orientable,
-//            FrameAttribute::NonSelfTouching, FrameAttribute::NonSelfIntersecting,
-//            FrameAttribute::NoCuts, FrameAttribute::NoJoins, FrameAttribute::ConvexFaces]);
-//        assert_eq!(fold.key_frame().frame_unit, FrameUnit::Millimeter);
-//        assert_eq!(fold.key_frame().basis, Some(Basis::new_arc(vec![sqrt_expr!(1)])));
-//        assert_eq!(fold.key_frame().vertices_coords_f64, Some(DMatrix::from_vec(2, 5, vec![
-//            -200.0, -200.0,
-//            -200.0, 200.0,
-//            200.0, 200.0,
-//            200.0, -200.0,
-//            0.0, 0.0,
-//        ])));
-//        assert_eq!(fold.key_frame().vertices_coords_exact, Some(DMatrix::from_vec(2, 5, vec![
-//            based_expr!(-200), based_expr!(-200),
-//            based_expr!(-200), based_expr!(200),
-//            based_expr!(200), based_expr!(200),
-//            based_expr!(200), based_expr!(-200),
-//            based_expr!(0), based_expr!(0),
-//        ])));
-//        assert_eq!(fold.key_frame().vertices_edges, Some(vec![
-//            vec![0, 4, 3],
-//            vec![1, 5, 0],
-//            vec![2, 6, 1],
-//            vec![3, 7, 2],
-//            vec![4, 5, 6, 7],
-//        ]));
-//        assert_eq!(fold.key_frame().edges_vertices, Some(vec![
-//            [0, 1],
-//            [1, 2],
-//            [2, 3],
-//            [3, 0],
-//            [0, 4],
-//            [1, 4],
-//            [2, 4],
-//            [3, 4],
-//        ]));
-//        assert_eq!(fold.key_frame().edges_faces, Some(vec![
-//            vec![Some(0), None],
-//            vec![Some(1), None],
-//            vec![Some(2), None],
-//            vec![Some(3), None],
-//            vec![Some(3), Some(0)],
-//            vec![Some(0), Some(1)],
-//            vec![Some(1), Some(2)],
-//            vec![Some(2), Some(3)],
-//        ]));
-//        assert_eq!(fold.key_frame().edges_assignment, Some(vec![
-//            EdgeAssignment::Boundary,
-//            EdgeAssignment::Boundary,
-//            EdgeAssignment::Boundary,
-//            EdgeAssignment::Boundary,
-//            EdgeAssignment::Mountain,
-//            EdgeAssignment::Mountain,
-//            EdgeAssignment::Mountain,
-//            EdgeAssignment::Valley,
-//        ]));
-//        assert_eq!(fold.key_frame().edges_fold_angle_f64, Some(vec![
-//            0.0,
-//            0.0,
-//            0.0,
-//            0.0,
-//            -180.0,
-//            -180.0,
-//            -180.0,
-//            180.0,
-//        ]));
-//        assert_eq!(fold.key_frame().edges_fold_angle_cs, Some(vec![
-//            (false, based_expr!(1), based_expr!(0)),
-//            (false, based_expr!(1), based_expr!(0)),
-//            (false, based_expr!(1), based_expr!(0)),
-//            (false, based_expr!(1), based_expr!(0)),
-//            (true, based_expr!(-1), based_expr!(0)),
-//            (true, based_expr!(-1), based_expr!(0)),
-//            (true, based_expr!(-1), based_expr!(0)),
-//            (false, based_expr!(-1), based_expr!(0)),
-//        ]));
-//        assert_eq!(fold.key_frame().edges_length_f64, Some(vec![
-//            200.0,
-//            200.0,
-//            200.0,
-//            200.0,
-//            141.4213562373095,
-//            141.4213562373095,
-//            141.4213562373095,
-//            141.4213562373095,
-//        ]));
-//        assert_eq!(fold.key_frame().edges_length2_exact, Some(vec![
-//            based_expr!(40000),
-//            based_expr!(40000),
-//            based_expr!(40000),
-//            based_expr!(40000),
-//            based_expr!(20000),
-//            based_expr!(20000),
-//            based_expr!(20000),
-//            based_expr!(20000),
-//        ]));
-//        assert_eq!(fold.key_frame().faces_vertices_edges, Some(vec![
-//            vec![(0, 0), (1, 5), (4, 4)],
-//            vec![(1, 1), (2, 6), (4, 5)],
-//            vec![(2, 2), (3, 7), (4, 6)],
-//            vec![(3, 3), (0, 4), (4, 7)],
-//        ]));
-//        assert_eq!(fold.key_frame().face_orders, Some(vec![]));
-//        assert_eq!(fold.key_frame().edge_orders, Some(vec![]));
-//        assert_eq!(fold.key_frame().frame_parent, None);
-//        assert_eq!(fold.key_frame().frame_inherit, Some(true));
-//        assert_eq!(fold.key_frame().vertices_custom, vec![
-//            ("test:degree".to_owned(), vec![
-//                json!(3),
-//                json!(3),
-//                json!(3),
-//                json!(3),
-//                json!(4),
-//            ])
-//        ].into_iter().collect::<IndexMap<_, _>>());
-//        assert_eq!(fold.key_frame().edges_custom, vec![
-//            ("test:color".to_owned(), vec![
-//                json!("red"),
-//                json!("green"),
-//                json!("red"),
-//                json!("green"),
-//                json!("blue"),
-//                json!("yellow"),
-//                json!("blue"),
-//                json!("yellow"),
-//            ])
-//        ].into_iter().collect::<IndexMap<_, _>>());
-//        assert_eq!(fold.key_frame().faces_custom, vec![
-//            ("test:circumcenter".to_owned(), vec![
-//                json!([100, 0]),
-//                json!([200, 100]),
-//                json!([100, 200]),
-//                json!([0, 100]),
-//            ])
-//        ].into_iter().collect::<IndexMap<_, _>>());
-//        assert_eq!(fold.key_frame().other_custom, vec![("frame_test:foo".to_owned(), Value::String("bar".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
-//    }
-//
-//    #[test]
-//    fn test_load_invalid_exact_coords_baseless() {
-//        let fold = Fold::from_file("test/invalid-x-exact-coords-baseless.fold");
-//        assert!(fold.is_err());
-//    }
-//
-//    #[test]
-//    fn test_load_invalid_empty() {
-//        let fold = Fold::from_file("test/invalid-x-empty.fold");
-//        assert!(fold.is_err());
-//    }
-//
-//    #[test]
-//    fn test_serialize_simple() {
-//        let fold = Fold {
-//            file_spec: "1.2".to_owned(),
-//            file_creator: Some("rust".to_owned()),
-//            file_frames: vec![
-//                    Frame {
-//                    vertices_coords_f64: Some(DMatrix::from_vec(2, 4, vec![
-//                        0.0, 0.0,
-//                        1.0, 0.0,
-//                        1.0, 1.0,
-//                        0.0, 1.0,
-//                    ])),
-//                    ..Default::default()
-//                },
-//            ],
-//            ..Default::default()
-//        };
-//        let expected = json!({
-//            "file_spec": 1.2,
-//            "file_creator": "rust",
-//            "vertices_coords": [
-//                [0.0, 0.0],
-//                [1.0, 0.0],
-//                [1.0, 1.0],
-//                [0.0, 1.0]
-//            ]
-//        });
-//        let result = fold.to_json_value().unwrap();
-//        assert_eq!(result, expected);
-//        println!("test_serialize_simple output: {}", fold.to_json_string().unwrap());
-//    }
-//
-//    #[test]
-//    fn test_serialize_exact_coords() {
-//        let fold = Fold {
-//            file_spec: "1.2".to_owned(),
-//            file_creator: Some("rust".to_owned()),
-//            file_frames: vec![
-//                Frame {
-//                    basis: Some(Basis::new_arc(vec![sqrt_expr!(1), sqrt_expr!(2)])),
-//                    vertices_coords_exact: Some(DMatrix::from_vec(2, 9, vec![
-//                        based_expr!(0 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2),
-//                        based_expr!(1 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2),
-//                        based_expr!(1 + 0 sqrt 2), based_expr!(1 + 0 sqrt 2),
-//                        based_expr!(0 + 0 sqrt 2), based_expr!(1 + 0 sqrt 2),
-//                        based_expr!(1/2 + 0 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
-//                        based_expr!(1/2 + 0 sqrt 2), based_expr!(-1/2 + 1/2 sqrt 2),
-//                        based_expr!(3/2 - 1/2 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
-//                        based_expr!(1/2 + 0 sqrt 2), based_expr!(3/2 - 1/2 sqrt 2),
-//                        based_expr!(-1/2 + 1/2 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
-//                    ])),
-//                    ..Default::default()
-//                },
-//            ],
-//            ..Default::default()
-//        };
-//        let expected = json!({
-//            "file_spec": 1.2,
-//            "file_creator": "rust",
-//            "frame_exact:basis": ["√1", "√2"],
-//            "vertices_exact:coords": [
-//                [["0", "0"], ["0", "0"]],
-//                [["1", "0"], ["0", "0"]],
-//                [["1", "0"], ["1", "0"]],
-//                [["0", "0"], ["1", "0"]],
-//                [["1/2", "0"], ["1/2", "0"]],
-//                [["1/2", "0"], ["-1/2", "1/2"]],
-//                [["3/2", "-1/2"], ["1/2", "0"]],
-//                [["1/2", "0"], ["3/2", "-1/2"]],
-//                [["-1/2", "1/2"], ["1/2", "0"]],
-//            ]
-//        });
-//        let result = fold.to_json_value().unwrap();
-//        assert_eq!(result, expected);
-//        println!("test_serialize_exact_coords output: {}", fold.to_json_string().unwrap());
-//    }
-//
-//    #[test]
-//    fn test_serialize_multiple_frames() {
-//        let fold = Fold {
-//            file_spec: "1.2".to_owned(),
-//            file_creator: Some("rust".to_owned()),
-//            file_frames: vec![
-//                Frame {
-//                    vertices_coords_f64: Some(DMatrix::from_vec(2, 4, vec![
-//                        0.0, 0.0,
-//                        1.0, 0.0,
-//                        1.0, 1.0,
-//                        0.0, 1.0,
-//                    ])),
-//                    ..Default::default()
-//                },
-//                Frame {
-//                    frame_title: Some("Scaled by 2".to_owned()),
-//                    vertices_coords_f64: Some(DMatrix::from_vec(2, 4, vec![
-//                        0.0, 0.0,
-//                        2.0, 0.0,
-//                        2.0, 2.0,
-//                        0.0, 2.0,
-//                    ])),
-//                    ..Default::default()
-//                },
-//                Frame {
-//                    frame_title: Some("Scaled by 3".to_owned()),
-//                    vertices_coords_f64: Some(DMatrix::from_vec(2, 4, vec![
-//                        0.0, 0.0,
-//                        3.0, 0.0,
-//                        3.0, 3.0,
-//                        0.0, 3.0,
-//                    ])),
-//                    ..Default::default()
-//                }
-//            ],
-//            ..Default::default()
-//        };
-//        let string = fold.to_json_string().unwrap();
-//        let num_lines = string.lines().count();
-//        assert_eq!(num_lines, 30); // make sure only the appropriate arrays are inlined
-//        println!("test_serialize_multiple_frames output: {}", string);
-//    }
-//
-//    #[test]
-//    fn test_serialize_all_fields() {
-//        // Let's just make sure a round trip preserves equality.
-//        let fold = Fold {
-//            file_spec: "1.1".to_owned(),
-//            file_creator: Some("oriedita".to_owned()),
-//            file_author: Some("hayastl".to_owned()),
-//            file_title: Some("x".to_owned()),
-//            file_description: Some("a simple cross pattern".to_owned()),
-//            file_classes: vec![FileClass::SingleModel],
-//            file_frames: vec![
-//                Frame {
-//                    frame_author: Some("hayastl".to_owned()),
-//                    frame_title: Some("The Key Frame".to_owned()),
-//                    frame_description: Some("the crease pattern".to_owned()),
-//                    frame_classes: vec![FrameClass::CreasePattern],
-//                    frame_attributes: vec![FrameAttribute::_2D, FrameAttribute::Manifold, FrameAttribute::Orientable,
-//                        FrameAttribute::NonSelfTouching, FrameAttribute::NonSelfIntersecting,
-//                        FrameAttribute::NoCuts, FrameAttribute::NoJoins, FrameAttribute::ConvexFaces],
-//                    frame_unit: FrameUnit::Millimeter,
-//                    basis: Some(Basis::new_arc(vec![sqrt_expr!(1)])),
-//                    num_vertices: 5,
-//                    vertices_coords_f64: Some(DMatrix::from_vec(2, 5, vec![
-//                        -200.0, -200.0,
-//                        -200.0, 200.0,
-//                        200.0, 200.0,
-//                        200.0, -200.0,
-//                        0.0, 0.0,
-//                    ])),
-//                    vertices_coords_exact: Some(DMatrix::from_vec(2, 5, vec![
-//                        based_expr!(-200), based_expr!(-200),
-//                        based_expr!(-200), based_expr!(200),
-//                        based_expr!(200), based_expr!(200),
-//                        based_expr!(200), based_expr!(-200),
-//                        based_expr!(0), based_expr!(0),
-//                    ])),
-//                    vertices_edges: Some(vec![
-//                        vec![0, 4, 3],
-//                        vec![1, 5, 0],
-//                        vec![2, 6, 1],
-//                        vec![3, 7, 2],
-//                        vec![4, 5, 6, 7],
-//                    ]),
-//                    edges_vertices: Some(vec![
-//                        [0, 1],
-//                        [1, 2],
-//                        [2, 3],
-//                        [3, 0],
-//                        [0, 4],
-//                        [1, 4],
-//                        [2, 4],
-//                        [3, 4],
-//                    ]),
-//                    edges_faces: Some(vec![
-//                        vec![Some(0), None],
-//                        vec![Some(1), None],
-//                        vec![Some(2), None],
-//                        vec![Some(3), None],
-//                        vec![Some(3), Some(0)],
-//                        vec![Some(0), Some(1)],
-//                        vec![Some(1), Some(2)],
-//                        vec![Some(2), Some(3)],
-//                    ]),
-//                    edges_assignment: Some(vec![
-//                        EdgeAssignment::Boundary,
-//                        EdgeAssignment::Boundary,
-//                        EdgeAssignment::Boundary,
-//                        EdgeAssignment::Boundary,
-//                        EdgeAssignment::Mountain,
-//                        EdgeAssignment::Mountain,
-//                        EdgeAssignment::Mountain,
-//                        EdgeAssignment::Valley,
-//                    ]),
-//                    edges_fold_angle_f64: Some(vec![
-//                        0.0,
-//                        0.0,
-//                        0.0,
-//                        0.0,
-//                        -180.0,
-//                        -180.0,
-//                        -180.0,
-//                        180.0,
-//                    ]),
-//                    edges_fold_angle_cs: Some(vec![
-//                        (false, based_expr!(1), based_expr!(0)),
-//                        (false, based_expr!(1), based_expr!(0)),
-//                        (false, based_expr!(1), based_expr!(0)),
-//                        (false, based_expr!(1), based_expr!(0)),
-//                        (true, based_expr!(-1), based_expr!(0)),
-//                        (true, based_expr!(-1), based_expr!(0)),
-//                        (true, based_expr!(-1), based_expr!(0)),
-//                        (false, based_expr!(-1), based_expr!(0)),
-//                    ]),
-//                    edges_length_f64: Some(vec![
-//                        200.0,
-//                        200.0,
-//                        200.0,
-//                        200.0,
-//                        141.4213562373095,
-//                        141.4213562373095,
-//                        141.4213562373095,
-//                        141.4213562373095,
-//                    ]),
-//                    edges_length2_exact: Some(vec![
-//                        based_expr!(40000),
-//                        based_expr!(40000),
-//                        based_expr!(40000),
-//                        based_expr!(40000),
-//                        based_expr!(20000),
-//                        based_expr!(20000),
-//                        based_expr!(20000),
-//                        based_expr!(20000),
-//                    ]),
-//                    faces_vertices_edges: Some(vec![
-//                        vec![(0, 0), (1, 5), (4, 4)],
-//                        vec![(1, 1), (2, 6), (4, 5)],
-//                        vec![(2, 2), (3, 7), (4, 6)],
-//                        vec![(3, 3), (0, 4), (4, 7)],
-//                    ]),
-//                    face_orders: Some(vec![]),
-//                    edge_orders: Some(vec![]),
-//                    frame_parent: None,
-//                    frame_inherit: Some(true),
-//                    vertices_custom: vec![
-//                        ("test:degree".to_owned(), vec![
-//                            json!(3),
-//                            json!(3),
-//                            json!(3),
-//                            json!(3),
-//                            json!(4),
-//                        ])
-//                    ].into_iter().collect::<IndexMap<_, _>>(),
-//                    edges_custom: vec![
-//                        ("test:color".to_owned(), vec![
-//                            json!("red"),
-//                            json!("green"),
-//                            json!("red"),
-//                            json!("green"),
-//                            json!("blue"),
-//                            json!("yellow"),
-//                            json!("blue"),
-//                            json!("yellow"),
-//                        ])
-//                    ].into_iter().collect::<IndexMap<_, _>>(),
-//                    faces_custom: vec![
-//                        ("test:circumcenter".to_owned(), vec![
-//                            json!([100, 0]),
-//                            json!([200, 100]),
-//                            json!([100, 200]),
-//                            json!([0, 100]),
-//                        ])
-//                    ].into_iter().collect::<IndexMap<_, _>>(),
-//                    other_custom: vec![("frame_test:foo".to_owned(), Value::String("bar".to_owned()))].into_iter().collect::<IndexMap<_, _>>(),
-//                },
-//                Frame {
-//                    frame_title: Some("Nothing".to_owned()),
-//                    frame_parent: Some(0),
-//                    ..Default::default()
-//                }
-//            ],
-//            file_custom: vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>(),
-//        };
-//        let string = fold.to_json_string().unwrap();
-//        println!("test_serialize_all_fields output: {}", string);
-//        let round_trip_fold = Fold::from_str(&string).unwrap();
-//        assert_eq!(fold, round_trip_fold);
-//    }
-//
-//}
+#[cfg(test)]
+mod test {
+    use indexmap::IndexMap;
+    use exact_number::{based_expr, basis::{ArcBasis, Basis}, sqrt_expr};
+    use nalgebra::DMatrix;
+    use serde_json::{json, Value};
+    use typed_index_collections::ti_vec;
+
+    use crate::fold::{EdgeAssignment, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit};
+    use crate::fold::{Vertex as V, Edge as E, HalfEdge as H, Face as F, FaceCorner as C};
+
+    #[test]
+    fn test_load_partial_metadata() {
+        let fold = Fold::from_file("test/x.fold").unwrap();
+        assert_eq!(fold.file_spec, "1.1");
+        assert_eq!(fold.file_creator, Some("oriedita".to_owned()));
+        assert_eq!(fold.file_author, None);
+        assert_eq!(fold.file_title, None);
+        assert_eq!(fold.file_description, None);
+        assert_eq!(fold.file_classes, vec![]);
+        assert_eq!(fold.file_custom, vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
+    }
+
+    #[test]
+    fn test_load_full_metadata() {
+        let fold = Fold::from_file("test/x-all-file-metadata.fold").unwrap();
+        assert_eq!(fold.file_spec, "1.1");
+        assert_eq!(fold.file_creator, Some("oriedita".to_owned()));
+        assert_eq!(fold.file_author, Some("hayastl".to_owned()));
+        assert_eq!(fold.file_title, Some("x".to_owned()));
+        assert_eq!(fold.file_description, Some("a simple cross pattern".to_owned()));
+        assert_eq!(fold.file_classes, vec![FileClass::SingleModel]);
+        assert_eq!(fold.file_custom, vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
+    }
+
+    #[test]
+    fn test_load_exact_coords() {
+        let fold = Fold::from_file("test/x-exact-coords.fold").unwrap();
+        let basis = Basis::new_arc(vec![sqrt_expr!(1)]);
+        let coords = DMatrix::from_vec(2, 5, vec![
+            based_expr!(-200), based_expr!(-200),
+            based_expr!(-200), based_expr!(200),
+            based_expr!(200), based_expr!(-200),
+            based_expr!(200), based_expr!(200),
+            based_expr!(0), based_expr!(0),
+        ]);
+        assert_eq!(fold.key_frame().basis, Some(basis));
+        assert_eq!(fold.key_frame().vertices_coords_exact, Some(coords));
+    }
+
+    #[test]
+    fn test_load_exact_coords_bird_base() {
+        let fold = Fold::from_file("test/x-exact-coords-bird-base.fold").unwrap();
+        let basis = Basis::new_arc(vec![sqrt_expr!(1), sqrt_expr!(2)]);
+        let coords = DMatrix::from_vec(2, 9, vec![
+            based_expr!(0 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2),
+            based_expr!(1 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2),
+            based_expr!(1 + 0 sqrt 2), based_expr!(1 + 0 sqrt 2),
+            based_expr!(0 + 0 sqrt 2), based_expr!(1 + 0 sqrt 2),
+            based_expr!(1/2 + 0 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
+            based_expr!(1/2 + 0 sqrt 2), based_expr!(-1/2 + 1/2 sqrt 2),
+            based_expr!(3/2 - 1/2 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
+            based_expr!(1/2 + 0 sqrt 2), based_expr!(3/2 - 1/2 sqrt 2),
+            based_expr!(-1/2 + 1/2 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
+        ]);
+        assert_eq!(fold.key_frame().basis, Some(basis));
+        assert_eq!(fold.key_frame().vertices_coords_exact, Some(coords));
+    }
+
+    #[test]
+    fn test_load_all_fields() {
+        let fold = Fold::from_file("test/x-all-file-data.fold").unwrap();
+        assert_eq!(fold.file_spec, "1.1");
+        assert_eq!(fold.file_creator, Some("oriedita".to_owned()));
+        assert_eq!(fold.file_author, Some("hayastl".to_owned()));
+        assert_eq!(fold.file_title, Some("x".to_owned()));
+        assert_eq!(fold.file_description, Some("a simple cross pattern".to_owned()));
+        assert_eq!(fold.file_classes, vec![FileClass::SingleModel]);
+        assert_eq!(fold.file_frames[FrameIndex(1)].frame_title, Some("Nothing".to_owned()));
+        assert_eq!(fold.file_frames[FrameIndex(1)].frame_parent, Some(FrameIndex(0)));
+        assert_eq!(fold.file_custom, vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
+        assert_eq!(fold.key_frame().frame_author, Some("hayastl".to_owned()));
+        assert_eq!(fold.key_frame().frame_title, Some("The Key Frame".to_owned()));
+        assert_eq!(fold.key_frame().frame_description, Some("the crease pattern".to_owned()));
+        assert_eq!(fold.key_frame().frame_classes, vec![FrameClass::CreasePattern]);
+        assert_eq!(fold.key_frame().frame_attributes, vec![FrameAttribute::_2D, FrameAttribute::Manifold, FrameAttribute::Orientable,
+            FrameAttribute::NonSelfTouching, FrameAttribute::NonSelfIntersecting,
+            FrameAttribute::NoCuts, FrameAttribute::NoJoins, FrameAttribute::ConvexFaces]);
+        assert_eq!(fold.key_frame().frame_unit, FrameUnit::Millimeter);
+        assert_eq!(fold.key_frame().basis, Some(Basis::new_arc(vec![sqrt_expr!(1)])));
+        assert_eq!(fold.key_frame().vertices_coords_f64, Some(DMatrix::from_vec(2, 5, vec![
+            -200.0, -200.0,
+            -200.0, 200.0,
+            200.0, 200.0,
+            200.0, -200.0,
+            0.0, 0.0,
+        ])));
+        assert_eq!(fold.key_frame().vertices_coords_exact, Some(DMatrix::from_vec(2, 5, vec![
+            based_expr!(-200), based_expr!(-200),
+            based_expr!(-200), based_expr!(200),
+            based_expr!(200), based_expr!(200),
+            based_expr!(200), based_expr!(-200),
+            based_expr!(0), based_expr!(0),
+        ])));
+        assert_eq!(fold.key_frame().vertices_half_edges, Some(ti_vec![
+            vec![H(0), H(8), H(7)],
+            vec![H(2), H(10), H(1)],
+            vec![H(4), H(12), H(3)],
+            vec![H(6), H(14), H(5)],
+            vec![H(9), H(11), H(13), H(15)],
+        ]));
+        assert_eq!(fold.key_frame().edges_vertices, Some(ti_vec![
+            [V(0), V(1)],
+            [V(1), V(2)],
+            [V(2), V(3)],
+            [V(3), V(0)],
+            [V(0), V(4)],
+            [V(1), V(4)],
+            [V(2), V(4)],
+            [V(3), V(4)],
+        ]));
+        assert_eq!(fold.key_frame().edges_face_corners, Some(ti_vec![
+            [vec![C(F(0), 0)], vec![]],
+            [vec![C(F(1), 0)], vec![]],
+            [vec![C(F(2), 0)], vec![]],
+            [vec![C(F(3), 0)], vec![]],
+            [vec![C(F(3), 1)], vec![C(F(0), 2)]],
+            [vec![C(F(0), 1)], vec![C(F(1), 2)]],
+            [vec![C(F(1), 1)], vec![C(F(2), 2)]],
+            [vec![C(F(2), 1)], vec![C(F(3), 2)]],
+        ]));
+        assert_eq!(fold.key_frame().edges_assignment, Some(ti_vec![
+            EdgeAssignment::Boundary,
+            EdgeAssignment::Boundary,
+            EdgeAssignment::Boundary,
+            EdgeAssignment::Boundary,
+            EdgeAssignment::Mountain,
+            EdgeAssignment::Mountain,
+            EdgeAssignment::Mountain,
+            EdgeAssignment::Valley,
+        ]));
+        assert_eq!(fold.key_frame().edges_fold_angle_f64, Some(ti_vec![
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -180.0,
+            -180.0,
+            -180.0,
+            180.0,
+        ]));
+        assert_eq!(fold.key_frame().edges_fold_angle_cs, Some(ti_vec![
+            (false, based_expr!(1), based_expr!(0)),
+            (false, based_expr!(1), based_expr!(0)),
+            (false, based_expr!(1), based_expr!(0)),
+            (false, based_expr!(1), based_expr!(0)),
+            (true, based_expr!(-1), based_expr!(0)),
+            (true, based_expr!(-1), based_expr!(0)),
+            (true, based_expr!(-1), based_expr!(0)),
+            (false, based_expr!(-1), based_expr!(0)),
+        ]));
+        assert_eq!(fold.key_frame().edges_length_f64, Some(ti_vec![
+            200.0,
+            200.0,
+            200.0,
+            200.0,
+            141.4213562373095,
+            141.4213562373095,
+            141.4213562373095,
+            141.4213562373095,
+        ]));
+        assert_eq!(fold.key_frame().edges_length2_exact, Some(ti_vec![
+            based_expr!(40000),
+            based_expr!(40000),
+            based_expr!(40000),
+            based_expr!(40000),
+            based_expr!(20000),
+            based_expr!(20000),
+            based_expr!(20000),
+            based_expr!(20000),
+        ]));
+        assert_eq!(fold.key_frame().faces_half_edges, Some(ti_vec![
+            vec![H(0), H(10), H(9)],
+            vec![H(2), H(12), H(11)],
+            vec![H(4), H(14), H(13)],
+            vec![H(6), H(8), H(15)],
+        ]));
+        assert_eq!(fold.key_frame().face_orders, Some(vec![]));
+        assert_eq!(fold.key_frame().edge_orders, Some(vec![]));
+        assert_eq!(fold.key_frame().frame_parent, None);
+        assert_eq!(fold.key_frame().frame_inherit, Some(true));
+        assert_eq!(fold.key_frame().vertices_custom, vec![
+            ("test:degree".to_owned(), ti_vec![
+                json!(3),
+                json!(3),
+                json!(3),
+                json!(3),
+                json!(4),
+            ])
+        ].into_iter().collect::<IndexMap<_, _>>());
+        assert_eq!(fold.key_frame().edges_custom, vec![
+            ("test:color".to_owned(), ti_vec![
+                json!("red"),
+                json!("green"),
+                json!("red"),
+                json!("green"),
+                json!("blue"),
+                json!("yellow"),
+                json!("blue"),
+                json!("yellow"),
+            ])
+        ].into_iter().collect::<IndexMap<_, _>>());
+        assert_eq!(fold.key_frame().faces_custom, vec![
+            ("test:circumcenter".to_owned(), ti_vec![
+                json!([100, 0]),
+                json!([200, 100]),
+                json!([100, 200]),
+                json!([0, 100]),
+            ])
+        ].into_iter().collect::<IndexMap<_, _>>());
+        assert_eq!(fold.key_frame().other_custom, vec![("frame_test:foo".to_owned(), Value::String("bar".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
+    }
+
+    #[test]
+    fn test_load_invalid_exact_coords_baseless() {
+        let fold = Fold::from_file("test/invalid-x-exact-coords-baseless.fold");
+        assert!(fold.is_err());
+    }
+
+    #[test]
+    fn test_load_invalid_empty() {
+        let fold = Fold::from_file("test/invalid-x-empty.fold");
+        assert!(fold.is_err());
+    }
+
+    #[test]
+    fn test_serialize_simple() {
+        let fold = Fold {
+            file_spec: "1.2".to_owned(),
+            file_creator: Some("rust".to_owned()),
+            file_frames: ti_vec![
+                    Frame {
+                    vertices_coords_f64: Some(DMatrix::from_vec(2, 4, vec![
+                        0.0, 0.0,
+                        1.0, 0.0,
+                        1.0, 1.0,
+                        0.0, 1.0,
+                    ])),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let expected = json!({
+            "file_spec": 1.2,
+            "file_creator": "rust",
+            "vertices_coords": [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 1.0],
+                [0.0, 1.0]
+            ]
+        });
+        let result = fold.to_json_value().unwrap();
+        assert_eq!(result, expected);
+        println!("test_serialize_simple output: {}", fold.to_json_string().unwrap());
+    }
+
+    #[test]
+    fn test_serialize_exact_coords() {
+        let fold = Fold {
+            file_spec: "1.2".to_owned(),
+            file_creator: Some("rust".to_owned()),
+            file_frames: ti_vec![
+                Frame {
+                    basis: Some(Basis::new_arc(vec![sqrt_expr!(1), sqrt_expr!(2)])),
+                    vertices_coords_exact: Some(DMatrix::from_vec(2, 9, vec![
+                        based_expr!(0 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2),
+                        based_expr!(1 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2),
+                        based_expr!(1 + 0 sqrt 2), based_expr!(1 + 0 sqrt 2),
+                        based_expr!(0 + 0 sqrt 2), based_expr!(1 + 0 sqrt 2),
+                        based_expr!(1/2 + 0 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
+                        based_expr!(1/2 + 0 sqrt 2), based_expr!(-1/2 + 1/2 sqrt 2),
+                        based_expr!(3/2 - 1/2 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
+                        based_expr!(1/2 + 0 sqrt 2), based_expr!(3/2 - 1/2 sqrt 2),
+                        based_expr!(-1/2 + 1/2 sqrt 2), based_expr!(1/2 + 0 sqrt 2),
+                    ])),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let expected = json!({
+            "file_spec": 1.2,
+            "file_creator": "rust",
+            "frame_exact:basis": ["√1", "√2"],
+            "vertices_exact:coords": [
+                [["0", "0"], ["0", "0"]],
+                [["1", "0"], ["0", "0"]],
+                [["1", "0"], ["1", "0"]],
+                [["0", "0"], ["1", "0"]],
+                [["1/2", "0"], ["1/2", "0"]],
+                [["1/2", "0"], ["-1/2", "1/2"]],
+                [["3/2", "-1/2"], ["1/2", "0"]],
+                [["1/2", "0"], ["3/2", "-1/2"]],
+                [["-1/2", "1/2"], ["1/2", "0"]],
+            ]
+        });
+        let result = fold.to_json_value().unwrap();
+        assert_eq!(result, expected);
+        println!("test_serialize_exact_coords output: {}", fold.to_json_string().unwrap());
+    }
+
+    #[test]
+    fn test_serialize_multiple_frames() {
+        let fold = Fold {
+            file_spec: "1.2".to_owned(),
+            file_creator: Some("rust".to_owned()),
+            file_frames: ti_vec![
+                Frame {
+                    vertices_coords_f64: Some(DMatrix::from_vec(2, 4, vec![
+                        0.0, 0.0,
+                        1.0, 0.0,
+                        1.0, 1.0,
+                        0.0, 1.0,
+                    ])),
+                    ..Default::default()
+                },
+                Frame {
+                    frame_title: Some("Scaled by 2".to_owned()),
+                    vertices_coords_f64: Some(DMatrix::from_vec(2, 4, vec![
+                        0.0, 0.0,
+                        2.0, 0.0,
+                        2.0, 2.0,
+                        0.0, 2.0,
+                    ])),
+                    ..Default::default()
+                },
+                Frame {
+                    frame_title: Some("Scaled by 3".to_owned()),
+                    vertices_coords_f64: Some(DMatrix::from_vec(2, 4, vec![
+                        0.0, 0.0,
+                        3.0, 0.0,
+                        3.0, 3.0,
+                        0.0, 3.0,
+                    ])),
+                    ..Default::default()
+                }
+            ],
+            ..Default::default()
+        };
+        let string = fold.to_json_string().unwrap();
+        let num_lines = string.lines().count();
+        assert_eq!(num_lines, 30); // make sure only the appropriate arrays are inlined
+        println!("test_serialize_multiple_frames output: {}", string);
+    }
+
+    #[test]
+    fn test_serialize_all_fields() {
+        // Let's just make sure a round trip preserves equality.
+        let fold = Fold {
+            file_spec: "1.1".to_owned(),
+            file_creator: Some("oriedita".to_owned()),
+            file_author: Some("hayastl".to_owned()),
+            file_title: Some("x".to_owned()),
+            file_description: Some("a simple cross pattern".to_owned()),
+            file_classes: vec![FileClass::SingleModel],
+            file_frames: ti_vec![
+                Frame {
+                    frame_author: Some("hayastl".to_owned()),
+                    frame_title: Some("The Key Frame".to_owned()),
+                    frame_description: Some("the crease pattern".to_owned()),
+                    frame_classes: vec![FrameClass::CreasePattern],
+                    frame_attributes: vec![FrameAttribute::_2D, FrameAttribute::Manifold, FrameAttribute::Orientable,
+                        FrameAttribute::NonSelfTouching, FrameAttribute::NonSelfIntersecting,
+                        FrameAttribute::NoCuts, FrameAttribute::NoJoins, FrameAttribute::ConvexFaces],
+                    frame_unit: FrameUnit::Millimeter,
+                    basis: Some(Basis::new_arc(vec![sqrt_expr!(1)])),
+                    num_vertices: 5,
+                    vertices_coords_f64: Some(DMatrix::from_vec(2, 5, vec![
+                        -200.0, -200.0,
+                        -200.0, 200.0,
+                        200.0, 200.0,
+                        200.0, -200.0,
+                        0.0, 0.0,
+                    ])),
+                    vertices_coords_exact: Some(DMatrix::from_vec(2, 5, vec![
+                        based_expr!(-200), based_expr!(-200),
+                        based_expr!(-200), based_expr!(200),
+                        based_expr!(200), based_expr!(200),
+                        based_expr!(200), based_expr!(-200),
+                        based_expr!(0), based_expr!(0),
+                    ])),
+                    vertices_half_edges: Some(ti_vec![
+                        vec![H(0), H(8), H(7)],
+                        vec![H(2), H(10), H(1)],
+                        vec![H(4), H(12), H(3)],
+                        vec![H(6), H(14), H(5)],
+                        vec![H(9), H(11), H(13), H(15)],
+                    ]),
+                    edges_vertices: Some(ti_vec![
+                        [V(0), V(1)],
+                        [V(1), V(2)],
+                        [V(2), V(3)],
+                        [V(3), V(0)],
+                        [V(0), V(4)],
+                        [V(1), V(4)],
+                        [V(2), V(4)],
+                        [V(3), V(4)],
+                    ]),
+                    edges_face_corners: Some(ti_vec![
+                        [vec![C(F(0), 0)], vec![]],
+                        [vec![C(F(1), 0)], vec![]],
+                        [vec![C(F(2), 0)], vec![]],
+                        [vec![C(F(3), 0)], vec![]],
+                        [vec![C(F(3), 1)], vec![C(F(0), 2)]],
+                        [vec![C(F(0), 1)], vec![C(F(1), 2)]],
+                        [vec![C(F(1), 1)], vec![C(F(2), 2)]],
+                        [vec![C(F(2), 1)], vec![C(F(3), 2)]],
+                    ]),
+                    edges_assignment: Some(ti_vec![
+                        EdgeAssignment::Boundary,
+                        EdgeAssignment::Boundary,
+                        EdgeAssignment::Boundary,
+                        EdgeAssignment::Boundary,
+                        EdgeAssignment::Mountain,
+                        EdgeAssignment::Mountain,
+                        EdgeAssignment::Mountain,
+                        EdgeAssignment::Valley,
+                    ]),
+                    edges_fold_angle_f64: Some(ti_vec![
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        -180.0,
+                        -180.0,
+                        -180.0,
+                        180.0,
+                    ]),
+                    edges_fold_angle_cs: Some(ti_vec![
+                        (false, based_expr!(1), based_expr!(0)),
+                        (false, based_expr!(1), based_expr!(0)),
+                        (false, based_expr!(1), based_expr!(0)),
+                        (false, based_expr!(1), based_expr!(0)),
+                        (true, based_expr!(-1), based_expr!(0)),
+                        (true, based_expr!(-1), based_expr!(0)),
+                        (true, based_expr!(-1), based_expr!(0)),
+                        (false, based_expr!(-1), based_expr!(0)),
+                    ]),
+                    edges_length_f64: Some(ti_vec![
+                        200.0,
+                        200.0,
+                        200.0,
+                        200.0,
+                        141.4213562373095,
+                        141.4213562373095,
+                        141.4213562373095,
+                        141.4213562373095,
+                    ]),
+                    edges_length2_exact: Some(ti_vec![
+                        based_expr!(40000),
+                        based_expr!(40000),
+                        based_expr!(40000),
+                        based_expr!(40000),
+                        based_expr!(20000),
+                        based_expr!(20000),
+                        based_expr!(20000),
+                        based_expr!(20000),
+                    ]),
+                    faces_half_edges: Some(ti_vec![
+                        vec![H(0), H(10), H(9)],
+                        vec![H(2), H(12), H(11)],
+                        vec![H(4), H(14), H(13)],
+                        vec![H(6), H(8), H(15)],
+                    ]),
+                    face_orders: Some(vec![]),
+                    edge_orders: Some(vec![]),
+                    frame_parent: None,
+                    frame_inherit: Some(true),
+                    vertices_custom: vec![
+                        ("test:degree".to_owned(), ti_vec![
+                            json!(3),
+                            json!(3),
+                            json!(3),
+                            json!(3),
+                            json!(4),
+                        ])
+                    ].into_iter().collect::<IndexMap<_, _>>(),
+                    edges_custom: vec![
+                        ("test:color".to_owned(), ti_vec![
+                            json!("red"),
+                            json!("green"),
+                            json!("red"),
+                            json!("green"),
+                            json!("blue"),
+                            json!("yellow"),
+                            json!("blue"),
+                            json!("yellow"),
+                        ])
+                    ].into_iter().collect::<IndexMap<_, _>>(),
+                    faces_custom: vec![
+                        ("test:circumcenter".to_owned(), ti_vec![
+                            json!([100, 0]),
+                            json!([200, 100]),
+                            json!([100, 200]),
+                            json!([0, 100]),
+                        ])
+                    ].into_iter().collect::<IndexMap<_, _>>(),
+                    other_custom: vec![("frame_test:foo".to_owned(), Value::String("bar".to_owned()))].into_iter().collect::<IndexMap<_, _>>(),
+                },
+                Frame {
+                    frame_title: Some("Nothing".to_owned()),
+                    frame_parent: Some(FrameIndex(0)),
+                    ..Default::default()
+                }
+            ],
+            file_custom: vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>(),
+        };
+        let string = fold.to_json_string().unwrap();
+        println!("test_serialize_all_fields output: {}", string);
+        let round_trip_fold = Fold::from_str(&string).unwrap();
+        assert_eq!(fold, round_trip_fold);
+    }
+
+}

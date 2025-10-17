@@ -6,3 +6,5 @@ pub mod topology;
 pub mod filter;
 pub mod geom;
 pub mod util;
+pub mod manifold;
+mod test_utils;

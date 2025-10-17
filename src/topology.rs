@@ -4,11 +4,52 @@ use indexmap::IndexMap;
 use serde_json::Value;
 use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
-use crate::{filter, fold::{Edge, Face, Frame, HalfEdge, Vertex}, ser_de::{SerDeFold, SerDeFrame}};
+use crate::{filter, fold::{AtHalfEdgeField, Edge, Face, FaceCorner, Frame, FrameAttribute, HalfEdge, Vertex}, ser_de::{SerDeFold, SerDeFrame}};
+use crate::fold::AtHalfEdge;
+
+/// Given `vertices_edges` and `edges_vertices` (defining edge endpoints),
+/// tries to compute `vertices_half_edges`, maintaining correspondence with `vertices_edges`.
+/// The result is unique.
+pub(crate) fn try_ve_ev_to_vh(vertices_edges: &TiSlice<Vertex, Vec<Edge>>, edges_vertices: &TiSlice<Edge, [Vertex; 2]>)
+    -> Result<TiVec<Vertex, Vec<HalfEdge>>, Vec<TopologyError>>
+{
+    let mut vertices_half_edges = ti_vec![vec![]; vertices_edges.len()];
+    let mut edges_vertices_account = edges_vertices.to_vec();
+    let mut errors = vec![];
+
+    for (e, vertices) in edges_vertices.iter_enumerated() {
+        if vertices[0] == vertices[1] {
+            errors.push(TopologyError::EdgeIsSelfLoop{ edge: e, vertex: vertices[0] });
+        }
+    }
+
+    for (v, edges) in vertices_edges.iter_enumerated() {
+        for &e in edges.iter() {
+            if let Some(index) = edges_vertices_account[e].iter().position(|v2| *v2 == v) {
+                vertices_half_edges[v].push(HalfEdge::new(e, index != 0));
+                edges_vertices_account[e][index] = Vertex(usize::MAX);
+            } else {
+                errors.push(TopologyError::OneWayVertexEdgeConnection { edge: e, vertex: v })
+            }
+        }
+    }
+
+    for (e, vertices) in edges_vertices_account.into_iter_enumerated() {
+        for v in vertices.into_iter() {
+            if v != Vertex(usize::MAX) {
+                errors.push(TopologyError::OneWayVertexEdgeConnection { edge: e, vertex: v })
+            }
+        }
+    }
+
+    if errors.is_empty() { Ok(vertices_half_edges) } else { Err(errors) }
+}
 
 /// Given `vertices_edges` (defining edge endpoints),
-/// tries to compute the `vertices_half_edges` and `edges_vertices` properties.
-fn try_ve_to_vh_ev(vertices_edges: &TiSlice<Vertex, Vec<Edge>>) -> Result<(TiVec<Vertex, Vec<HalfEdge>>, TiVec<Edge, [Vertex; 2]>), Vec<TopologyError>> {
+/// tries to compute the `vertices_half_edges` and `edges_vertices` properties, with
+/// `vertices_half_edges` maintaining correspondence with `vertices_edges`.
+/// The vertex order of an edge is arbitrary. 
+pub(crate) fn try_ve_to_vh_ev(vertices_edges: &TiSlice<Vertex, Vec<Edge>>) -> Result<(TiVec<Vertex, Vec<HalfEdge>>, TiVec<Edge, [Vertex; 2]>), Vec<TopologyError>> {
     let num_edges = vertices_edges.iter().flatten().copied().max().map(|n | n.0 + 1).unwrap_or(0);
     let mut vertices_half_edges = ti_vec![vec![]; vertices_edges.len()];
     let mut edges_vertices = ti_vec![vec![]; num_edges];
@@ -34,7 +75,8 @@ fn try_ve_to_vh_ev(vertices_edges: &TiSlice<Vertex, Vec<Edge>>) -> Result<(TiVec
 
 /// Given `vertices_half_edges` (defining edge endpoints),
 /// tries to compute the `edges_vertices` property.
-fn try_vh_to_ev(vertices_half_edges: &TiSlice<Vertex, Vec<HalfEdge>>) -> Result<TiVec<Edge, [Vertex; 2]>, Vec<TopologyError>> {
+/// The result is unique.
+pub(crate) fn try_vh_to_ev(vertices_half_edges: &TiSlice<Vertex, Vec<HalfEdge>>) -> Result<TiVec<Edge, [Vertex; 2]>, Vec<TopologyError>> {
     let num_edges = vertices_half_edges.iter().flatten().copied().max().map(|h | h.edge().0 + 1).unwrap_or(0);
     let mut edges_vertices = ti_vec![[Vertex(usize::MAX); 2]; num_edges];
     let mut errors = vec![];
@@ -65,8 +107,8 @@ fn try_vh_to_ev(vertices_half_edges: &TiSlice<Vertex, Vec<HalfEdge>>) -> Result<
 
 /// Given `edges_vertices` (defining edge endpoints),
 /// tries to compute the `vertices_half_edges` property.
-/// However, note that the `vertices_half_edges` arrays will not be sorted in counterclockwise order.
-fn try_ev_to_vh(edges_vertices: &TiSlice<Edge, [Vertex; 2]>, num_vertices: usize) -> Result<TiVec<Vertex, Vec<HalfEdge>>, Vec<TopologyError>> {
+/// The half-edge order of a vertex is arbitrary.
+pub(crate) fn try_ev_to_vh(edges_vertices: &TiSlice<Edge, [Vertex; 2]>, num_vertices: usize) -> Result<TiVec<Vertex, Vec<HalfEdge>>, Vec<TopologyError>> {
     let mut vertices_half_edges = ti_vec![vec![]; num_vertices];
     let mut errors = vec![];
     for (e, &[v0, v1]) in edges_vertices.iter_enumerated() {
@@ -80,10 +122,11 @@ fn try_ev_to_vh(edges_vertices: &TiSlice<Edge, [Vertex; 2]>, num_vertices: usize
 }
 
 /// Given `faces_edges` and `edges_vertices`
-/// tries to calculate `faces_half_edges`, which lines up with `faces_edges`.
+/// tries to calculate `faces_half_edges`, maintaining correspondence with `faces_edges`
+/// The result is unique.
 /// 
 /// For now, assumes that `edges_vertices` is valid. Call `try_ev_to_vh` to check for validity.
-fn try_fe_ev_to_fh(faces_edges: &TiSlice<Face, Vec<Edge>>, edges_vertices: &TiSlice<Edge, [Vertex; 2]>)
+pub(crate) fn try_fe_ev_to_fh(faces_edges: &TiSlice<Face, Vec<Edge>>, edges_vertices: &TiSlice<Edge, [Vertex; 2]>)
     -> Result<TiVec<Face, Vec<HalfEdge>>, Vec<TopologyError>>
 {
     // TODO: Check ev again?
@@ -131,10 +174,11 @@ fn try_fe_ev_to_fh(faces_edges: &TiSlice<Face, Vec<Edge>>, edges_vertices: &TiSl
 }
 
 /// Given `faces_vertices` and `vertices_half_edges`
-/// tries to calculate `faces_half_edges`
+/// tries to calculate `faces_half_edges`, maintaining correspondence with `faces_vertices`.
+/// The result is unique.
 /// 
 /// For now, assumes that `vertices_half_edges` is valid.
-fn try_fv_vh_to_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, vertices_half_edges: &TiSlice<Vertex, Vec<HalfEdge>>)
+pub(crate) fn try_fv_vh_to_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, vertices_half_edges: &TiSlice<Vertex, Vec<HalfEdge>>)
     -> Result<TiVec<Face, Vec<HalfEdge>>, Vec<TopologyError>>
 {
     let mut faces_half_edges = ti_vec![vec![]; faces_vertices.len()];
@@ -164,10 +208,12 @@ fn try_fv_vh_to_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, vertices_half_ed
 }
 
 /// Given `faces_vertices` and `faces_edges`
-/// tries to calculate `edges_vertices` and `faces_half_edges`
+/// tries to calculate `edges_vertices` and `faces_half_edges`,
+/// with `faces_half_edges` maintaining correspondence with `faces_vertices` and `faces_edges`.
+/// The vertex order of an edge (and thus the half-edge direction in the faces) is arbitrary.
 /// 
 /// Assumes the face counts actually match.
-fn try_fv_fe_to_ev_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, faces_edges: &TiSlice<Face, Vec<Edge>>, num_edges: usize)
+pub(crate) fn try_fv_fe_to_ev_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, faces_edges: &TiSlice<Face, Vec<Edge>>, num_edges: usize)
     -> Result<(TiVec<Edge, [Vertex; 2]>, TiVec<Face, Vec<HalfEdge>>), Vec<TopologyError>>
 {
     let mut errors = vec![];
@@ -207,7 +253,8 @@ fn try_fv_fe_to_ev_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, faces_edges: 
 
 /// Given `faces_vertices`
 /// tries to calculate `vertices_half_edges`, making up a numbering for the edges.
-fn try_fv_to_vh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, num_vertices: usize)
+/// The edge numbering, the order of half-edges in a vertex, and the direction of each half-edge are arbitrary.
+pub(crate) fn try_fv_to_vh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, num_vertices: usize)
     -> Result<TiVec<Vertex, Vec<HalfEdge>>, Vec<TopologyError>>
 {
     let mut errors = vec![];
@@ -235,26 +282,29 @@ fn try_fv_to_vh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, num_vertices: usize
 }
 
 /// Given `faces_half_edges`
-/// tries to calculate `edges_faces`
+/// tries to calculate `edges_face_corners`.
+/// The order of faces in each 'half-edge' is arbitrary.
 /// 
 /// For now, assumes that `faces_half_edges` is valid.
-fn try_fh_to_ef(faces_half_edges: &TiSlice<Face, Vec<HalfEdge>>, num_edges: usize)
-    -> Result<TiVec<Edge, Vec<Option<Face>>>, Vec<TopologyError>>
+pub(crate) fn try_fh_to_ec(faces_half_edges: &TiSlice<Face, Vec<HalfEdge>>, num_edges: usize)
+    -> Result<TiVec<Edge, [Vec<FaceCorner>; 2]>, Vec<TopologyError>>
 {
-    let mut edges_faces = ti_vec![vec![]; num_edges];
+    let mut edges_face_corners = ti_vec![[vec![], vec![]]; num_edges];
 
     for (f, half_edges) in faces_half_edges.iter_enumerated() {
-        for h in half_edges {
-            edges_faces[h.edge()].push(Some(f));
+        for (i, h) in half_edges.iter().enumerate() {
+            edges_face_corners[h.edge()][h.flip_bit() as usize].push(FaceCorner(f, i));
         }
     }
 
-    Ok(edges_faces)
+    Ok(edges_face_corners)
 }
 
 /// Given `vertices_vertices`
-/// tries to calculate `vertices_half_edges`, making up a numbering for the edges.
-fn try_vv_to_vh(vertices_vertices: &TiSlice<Vertex, Vec<Vertex>>)
+/// tries to calculate `vertices_half_edges`, making up a numbering for the edges,
+/// maintaining correspondence with `vertices_vertices`.
+/// The edge numbering and the direction of each half-edge are arbitary.
+pub(crate) fn try_vv_to_vh(vertices_vertices: &TiSlice<Vertex, Vec<Vertex>>)
     -> Result<TiVec<Vertex, Vec<HalfEdge>>, Vec<TopologyError>>
 {
     // TODO: Test (it's annoying to canonicalize the result value)
@@ -305,7 +355,8 @@ impl Display for Element {
 }
 
 /// An error in the topology
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))] // Really no point in this derivation outside of tests
 pub enum TopologyError {
     /// The number of elements in two fields don't match.
     /// The fields, their reported counts, and whether they're just lower bounds or exact are given.
@@ -320,6 +371,8 @@ pub enum TopologyError {
     HalfEdgeConflict { vertex: Vertex, half_edge: HalfEdge },
     /// A vertex `u` is connected to another vertex `v`, but `v` isn't connected to `u`.
     OneWayVertexConnection { vertices: [Vertex; 2] },
+    /// A vertex `u` claims to be connected to edge `e`, but `e` doesn't agree. Or vice versa
+    OneWayVertexEdgeConnection { edge: Edge, vertex: Vertex },
     /// A face doesn't have at least 2 edges. The face and edges are given.
     FaceDoesNotHaveAtLeast2Edges { face: Face, edges: Vec<Edge> },
     /// A face doesn't have at least 2 vertices. The face and vertices are given.
@@ -338,8 +391,6 @@ pub enum TopologyError {
     /// `faces_edges` doesn't account for all the edges, and there isn't enough information
     /// to derive `edges_vertices`.
     AmbiguousMissingEdgesFromFaces { missing_edges: Vec<Edge> },
-    /// Information for a vertex exists without the necessary information to support it.
-    InvalidVertexInformationExistence { field: String },
     /// Information for an edge exists without the necessary information to support it.
     InvalidEdgeInformationExistence { field: String },
     /// Information for a face exists without the necessary information to support it.
@@ -348,6 +399,7 @@ pub enum TopologyError {
 
 impl Display for TopologyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "topology error: ")?;
         match self {
             Self::ElementCountMismatch { element, fields, counts, exact } => {
                 write!(f, "{element} counts aren't compatible between \"{}\" (count {} {}) and \"{}\" (count {} {})",
@@ -368,6 +420,9 @@ impl Display for TopologyError {
             }
             Self::OneWayVertexConnection { vertices } => {
                 write!(f, "the edge count from vertex {} to vertex {} doesn't match the edge count in the other direction", vertices[0], vertices[1])
+            }
+            Self::OneWayVertexEdgeConnection { edge, vertex } => {
+                write!(f, "vertex {vertex} claims to be on edge {edge}, but {edge} doesn't think so, or vice versa.")
             }
             Self::FaceDoesNotHaveAtLeast2Edges { face, edges } => {
                 write!(f, "face {} does not have at least 2 edges (its edges are {:?})", face, edges)
@@ -398,10 +453,6 @@ impl Display for TopologyError {
             Self::AmbiguousMissingEdgesFromFaces { missing_edges } => {
                 write!(f, concat!("\"faces_edges\" is missing edges {:?} without the necessary information
                     (e.g. \"edges_vertices\" or \"vertices_edges\") to derive \"edges_vertices\""), missing_edges)
-            }
-            Self::InvalidVertexInformationExistence { field } => {
-                write!(f, concat!("vertex information exists (\"{}\") without anything relating vertices to edges/faces ",
-                    "(\"edges_vertices\", \"vertices_edges\", or \"faces_vertices\")"), field)
             }
             Self::InvalidEdgeInformationExistence { field } => {
                 write!(f, concat!("edge information exists (\"{}\") without anything relating edges to vertices/faces ",
@@ -514,7 +565,7 @@ impl SerDeFrame {
             Self,
             Option<TiVec<Vertex, Vec<HalfEdge>>>,
             Option<TiVec<Edge, [Vertex; 2]>>,
-            Option<TiVec<Edge, Vec<Option<Face>>>>,
+            Option<TiVec<Edge, [Vec<FaceCorner>; 2]>>,
             Option<TiVec<Face, Vec<HalfEdge>>>
         ), Vec<TopologyError>>
     {
@@ -524,25 +575,29 @@ impl SerDeFrame {
         let (vertices_half_edges, edges_vertices) = match (self.edges_vertices.take(), self.vertices_edges.take()) {
             (None, None) => (None, None),
             (None, Some(ve)) => {
-                let (vhe, ev) = try_ve_to_vh_ev(&ve)?;
-                (Some(vhe), Some(ev))
+                let (vh, ev) = try_ve_to_vh_ev(&ve)?;
+                (Some(vh), Some(ev))
             },
-            (Some(ev), _) => (Some(try_ev_to_vh(&ev, num_vertices)?), Some(ev))
+            (Some(ev), None) => (Some(try_ev_to_vh(&ev, num_vertices)?), Some(ev)),
+            (Some(ev), Some(ve)) => {
+                let vh = try_ve_ev_to_vh(&ve, &ev)?;
+                (Some(vh), Some(ev))
+            }
         };
 
         let faces_vertices = self.faces_vertices.take();
         let faces_edges = self.faces_edges.take();
 
-        let (vertices_half_edges, edges_vertices, edges_faces, faces_half_edges) =
+        let (vertices_half_edges, edges_vertices, edges_face_corners, faces_half_edges) =
             if let (Some(vertices_half_edges), Some(edges_vertices)) = (vertices_half_edges, edges_vertices) {
                 if let Some(faces_edges) = faces_edges {
                     let fh = try_fe_ev_to_fh(&faces_edges, &edges_vertices)?;
-                    let ef = try_fh_to_ef(&fh, edges_vertices.len())?;
+                    let ef = try_fh_to_ec(&fh, edges_vertices.len())?;
                     (Some(vertices_half_edges), Some(edges_vertices), Some(ef), Some(fh))
 
                 } else if let Some(faces_vertices) = faces_vertices {
                     let fh = try_fv_vh_to_fh(&faces_vertices, &vertices_half_edges)?;
-                    let ef = try_fh_to_ef(&fh, edges_vertices.len())?;
+                    let ef = try_fh_to_ec(&fh, edges_vertices.len())?;
                     (Some(vertices_half_edges), Some(edges_vertices), Some(ef), Some(fh))
 
                 } else {
@@ -557,7 +612,7 @@ impl SerDeFrame {
                     if let Some(faces_edges) = faces_edges {
                         let (ev, fh) = try_fv_fe_to_ev_fh(&faces_vertices, &faces_edges, num_edges)?;
                         let ve = try_ev_to_vh(&ev, num_vertices)?;
-                        let ef = try_fh_to_ef(&fh, ev.len())?;
+                        let ef = try_fh_to_ec(&fh, ev.len())?;
                         (Some(ve), Some(ev), Some(ef), Some(fh))
                     } else {
                         // No edge information!
@@ -567,7 +622,7 @@ impl SerDeFrame {
                         let vh = try_fv_to_vh(&faces_vertices, num_vertices)?;
                         let ev = try_vh_to_ev(&vh)?;
                         let fh = try_fv_vh_to_fh(&faces_vertices, &vh)?;
-                        let ef = try_fh_to_ef(&fh, vh.len())?;
+                        let ef = try_fh_to_ec(&fh, vh.len())?;
                         (Some(vh), Some(ev), Some(ef), Some(fh))
                     }
                 } else if let Some(vertices_vertices) = self.vertices_vertices.take() {
@@ -581,7 +636,6 @@ impl SerDeFrame {
                     (Some(vh), Some(ev), None, None)
                 } else {
                     let mut errors = vec![];
-                    if let Some((_, field)) = vertices_meta { errors.push(TopologyError::InvalidVertexInformationExistence { field }); }
                     if let Some((_, field)) = edges_meta { errors.push(TopologyError::InvalidEdgeInformationExistence { field }); }
                     if let Some((_, field)) = faces_meta { errors.push(TopologyError::InvalidFaceInformationExistence { field }); }
                     if !errors.is_empty() { Err(errors)? }
@@ -589,7 +643,7 @@ impl SerDeFrame {
                 }
             };
             
-        Ok((self, vertices_half_edges, edges_vertices, edges_faces, faces_half_edges))
+        Ok((self, vertices_half_edges, edges_vertices, edges_face_corners, faces_half_edges))
     }
 }
 
@@ -597,12 +651,68 @@ impl Frame {
     /// Extracts `vertices_vertices`, `vertices_edges`, `vertices_faces`,
     /// `edges_vertices`, `edges_faces`,
     /// `faces_vertices`, `faces_edges`, and `faces_faces` from this frame.
-    pub fn extract_topology(self)
+    pub fn extract_topology(mut self)
         -> Result<(Self, Option<TiVec<Vertex, Vec<Vertex>>>, Option<TiVec<Vertex, Vec<Edge>>>, Option<TiVec<Vertex, Vec<Option<Face>>>>,
                          Option<TiVec<Edge, [Vertex; 2]>>,                                     Option<TiVec<Edge, Vec<Option<Face>>>>,
                          Option<TiVec<Face, Vec<Vertex>>>,   Option<TiVec<Face, Vec<Edge>>>,   Option<TiVec<Face, Vec<Option<Face>>>>), String>
     {
-        unimplemented!()
+        let vertices_half_edges = self.vertices_half_edges.take();
+        let edges_vertices = self.edges_vertices.take(); // should exist if `vertices_half_edges` exists
+        let h_edges_faces = self.edges_face_corners.take();
+        let faces_half_edges = self.faces_half_edges.take();
+
+        let vertices_vertices = vertices_half_edges.as_ref().map(|vh|
+            vh.iter().map(|hs| hs.iter().map(|&h| edges_vertices.as_ref().unwrap().at(h)[1]).collect::<Vec<_>>())
+                .collect::<TiVec<Vertex, _>>());
+
+        let vertices_edges = vertices_half_edges.as_ref().map(|vh|
+            vh.iter().map(|hs| hs.iter().map(|h| h.edge()).collect::<Vec<_>>())
+                .collect::<TiVec<Vertex, _>>());
+
+        let vertices_faces = vertices_half_edges.as_ref().map(|vh|
+            vh.iter().map(|hs| {
+                let iter = hs.iter().map(|&h| h_edges_faces.as_ref().unwrap().at(h));
+                if self.frame_attributes.contains(&FrameAttribute::Manifold) {
+                    iter.map(|fs| fs.first().copied().map(FaceCorner::face)).collect::<Vec<_>>()
+                } else {
+                    iter.flatten().copied().map(|c| Some(c.face())).collect::<Vec<_>>()
+                }
+            }).collect::<TiVec<Vertex, _>>());
+
+        let edges_faces = h_edges_faces.as_ref().map(|ef|
+            ef.iter().map(|fs| if self.frame_attributes.contains(&FrameAttribute::Orientable) {
+                vec![fs[0].first().copied().map(FaceCorner::face), fs[1].first().copied().map(FaceCorner::face)]
+            } else {
+                let mut fs = fs.iter().flatten().copied().map(|c| Some(c.face())).collect::<Vec<_>>();
+                if self.frame_attributes.contains(&FrameAttribute::Manifold) { fs.resize(2, None) }
+                fs
+            }).collect::<TiVec<Edge, _>>());
+
+        let faces_vertices = faces_half_edges.as_ref().map(|fh|
+            fh.iter().map(|hs| hs.iter().map(|&h| edges_vertices.as_ref().unwrap().at(h)[0]).collect::<Vec<_>>())
+                .collect::<TiVec<Face, _>>());
+
+        let faces_edges = faces_half_edges.as_ref().map(|fh|
+            fh.iter().map(|hs| hs.iter().map(|&h| h.edge()).collect::<Vec<_>>())
+                .collect::<TiVec<Face, _>>());
+
+        let faces_faces = faces_half_edges.as_ref().map(|fh|
+            fh.iter_enumerated().map(|(f, hs)| {
+                let iter = hs.iter().enumerate().map(|(i, &h)|
+                    h_edges_faces.as_ref().unwrap()[h.edge()].iter().flatten().copied().filter(move |&f2| FaceCorner(f, i) != f2));
+                if self.frame_attributes.contains(&FrameAttribute::Manifold) {
+                    iter.map(|mut it| it.next().map(FaceCorner::face)).collect::<Vec<_>>()
+                } else {
+                    iter.flatten().map(|c| Some(c.face())).collect::<Vec<_>>()
+                }
+            }).collect::<TiVec<Face, _>>());
+                
+        Ok((
+            self,
+            vertices_vertices, vertices_edges, vertices_faces,
+               edges_vertices,                    edges_faces,
+               faces_vertices,    faces_edges,    faces_faces,
+        ))
     }
 }
 
@@ -616,7 +726,7 @@ mod test {
     use vf2::{Direction, Graph};
 
     use crate::{filter::{edges_vertices_incident, other_vertex}, ser_de::{SerDeFrame, SerDeRat}, topology::TopologyError};
-    use crate::fold::{Vertex as V, Edge as E, Face as F, HalfEdge as H};
+    use crate::fold::{Vertex as V, Edge as E, Face as F, HalfEdge as H, FaceCorner as C};
 
     #[test]
     fn test_num_vertices_vertices_coords_f64() {
@@ -1592,50 +1702,50 @@ mod test {
         use TopologyError::*;
         const SF: fn(usize) -> Option<F> = |f| Some(F(f));
 
-        let edges_faces = super::try_fh_to_ef(&ti_vec![], 0);
+        let edges_faces = super::try_fh_to_ec(&ti_vec![], 0);
         assert_eq!(edges_faces, Ok(ti_vec![]));
 
         // Single triangle
-        let mut edges_faces = super::try_fh_to_ef(&ti_vec![
+        let mut edges_faces = super::try_fh_to_ec(&ti_vec![
             vec![H(1), H(5), H(3)],
         ], 3);
-        edges_faces.as_mut().unwrap().iter_mut().for_each(|faces| faces.sort() );
+        edges_faces.as_mut().unwrap().iter_mut().flatten().for_each(|faces| faces.sort() );
         assert_eq!(edges_faces, Ok(ti_vec![
-            vec![SF(0)],
-            vec![SF(0)],
-            vec![SF(0)],
+            [vec![], vec![C(F(0), 0)]],
+            [vec![], vec![C(F(0), 2)]],
+            [vec![], vec![C(F(0), 1)]],
         ]));
 
         // Doubly-covered square
-        let mut edges_faces = super::try_fh_to_ef(&ti_vec![
+        let mut edges_faces = super::try_fh_to_ec(&ti_vec![
             vec![H(0), H(2), H(4), H(6)],
             vec![H(7), H(5), H(3), H(1)],
         ], 4);
-        edges_faces.as_mut().unwrap().iter_mut().for_each(|faces| faces.sort() );
+        edges_faces.as_mut().unwrap().iter_mut().flatten().for_each(|faces| faces.sort() );
         assert_eq!(edges_faces, Ok(ti_vec![
-            vec![SF(0), SF(1)],
-            vec![SF(0), SF(1)],
-            vec![SF(0), SF(1)],
-            vec![SF(0), SF(1)],
+            [vec![C(F(0), 0)], vec![C(F(1), 3)]],
+            [vec![C(F(0), 1)], vec![C(F(1), 2)]],
+            [vec![C(F(0), 2)], vec![C(F(1), 1)]],
+            [vec![C(F(0), 3)], vec![C(F(1), 0)]],
         ]));
 
         // Square cross
-        let mut edges_faces = super::try_fh_to_ef(&ti_vec![
+        let mut edges_faces = super::try_fh_to_ec(&ti_vec![
             vec![H(0), H(10), H(9)],
             vec![H(2), H(12), H(11)],
             vec![H(4), H(14), H(13)],
             vec![H(6), H(8), H(15)],
         ], 8);
-        edges_faces.as_mut().unwrap().iter_mut().for_each(|faces| faces.sort() );
+        edges_faces.as_mut().unwrap().iter_mut().flatten().for_each(|faces| faces.sort() );
         assert_eq!(edges_faces, Ok(ti_vec![
-            vec![SF(0)],
-            vec![SF(1)],
-            vec![SF(2)],
-            vec![SF(3)],
-            vec![SF(0), SF(3)],
-            vec![SF(0), SF(1)],
-            vec![SF(1), SF(2)],
-            vec![SF(2), SF(3)],
+            [vec![C(F(0), 0)], vec![]],
+            [vec![C(F(1), 0)], vec![]],
+            [vec![C(F(2), 0)], vec![]],
+            [vec![C(F(3), 0)], vec![]],
+            [vec![C(F(3), 1)], vec![C(F(0), 2)]],
+            [vec![C(F(0), 1)], vec![C(F(1), 2)]],
+            [vec![C(F(1), 1)], vec![C(F(2), 2)]],
+            [vec![C(F(2), 1)], vec![C(F(3), 2)]],
         ]));
 
         // Slitted face
@@ -1646,67 +1756,67 @@ mod test {
         // |  4-4-5  |
         // |,8       |
         // 0----0----1
-        let mut edges_faces = super::try_fh_to_ef(&ti_vec![
+        let mut edges_faces = super::try_fh_to_ec(&ti_vec![
             vec![H(0), H(2), H(4), H(6), H(16), H(15), H(13), H(11), H(9), H(17)],
             vec![H(8), H(10), H(12), H(14)],
         ], 9);
-        edges_faces.as_mut().unwrap().iter_mut().for_each(|faces| faces.sort() );
+        edges_faces.as_mut().unwrap().iter_mut().flatten().for_each(|faces| faces.sort() );
         assert_eq!(edges_faces, Ok(ti_vec![
-            vec![SF(0)],
-            vec![SF(0)],
-            vec![SF(0)],
-            vec![SF(0)],
-            vec![SF(0), SF(1)],
-            vec![SF(0), SF(1)],
-            vec![SF(0), SF(1)],
-            vec![SF(0), SF(1)],
-            vec![SF(0), SF(0)],
+            [vec![C(F(0), 0)], vec![]],
+            [vec![C(F(0), 1)], vec![]],
+            [vec![C(F(0), 2)], vec![]],
+            [vec![C(F(0), 3)], vec![]],
+            [vec![C(F(1), 0)], vec![C(F(0), 8)]],
+            [vec![C(F(1), 1)], vec![C(F(0), 7)]],
+            [vec![C(F(1), 2)], vec![C(F(0), 6)]],
+            [vec![C(F(1), 3)], vec![C(F(0), 5)]],
+            [vec![C(F(0), 4)], vec![C(F(0), 9)]],
         ]));
 
         // Three triangles from a single edge (not a manifold)
-        let mut edges_faces = super::try_fh_to_ef(&ti_vec![
+        let mut edges_faces = super::try_fh_to_ec(&ti_vec![
             vec![H(0), H(2), H(4)],
             vec![H(0), H(6), H(8)],
             vec![H(0), H(10), H(12)],
         ], 7);
-        edges_faces.as_mut().unwrap().iter_mut().for_each(|faces| faces.sort() );
+        edges_faces.as_mut().unwrap().iter_mut().flatten().for_each(|faces| faces.sort() );
         assert_eq!(edges_faces, Ok(ti_vec![
-            vec![SF(0), SF(1), SF(2)],
-            vec![SF(0)],
-            vec![SF(0)],
-            vec![SF(1)],
-            vec![SF(1)],
-            vec![SF(2)],
-            vec![SF(2)],
+            [vec![C(F(0), 0), C(F(1), 0), C(F(2), 0)], vec![]],
+            [vec![C(F(0), 1)], vec![]],
+            [vec![C(F(0), 2)], vec![]],
+            [vec![C(F(1), 1)], vec![]],
+            [vec![C(F(1), 2)], vec![]],
+            [vec![C(F(2), 1)], vec![]],
+            [vec![C(F(2), 2)], vec![]],
         ]));
 
         // Partially slitted face
-        let mut edges_faces = super::try_fh_to_ef(&ti_vec![
+        let mut edges_faces = super::try_fh_to_ec(&ti_vec![
             vec![H(8), H(9), H(0), H(2), H(4), H(6)],
         ], 5);
-        edges_faces.as_mut().unwrap().iter_mut().for_each(|faces| faces.sort() );
+        edges_faces.as_mut().unwrap().iter_mut().flatten().for_each(|faces| faces.sort() );
         assert_eq!(edges_faces, Ok(ti_vec![
-            vec![SF(0)],
-            vec![SF(0)],
-            vec![SF(0)],
-            vec![SF(0)],
-            vec![SF(0), SF(0)],
+            [vec![C(F(0), 2)], vec![]],
+            [vec![C(F(0), 3)], vec![]],
+            [vec![C(F(0), 4)], vec![]],
+            [vec![C(F(0), 5)], vec![]],
+            [vec![C(F(0), 0)], vec![C(F(0), 1)]],
         ]));
         
-        // Doubled-up edge. Not allowed
-        let mut edges_faces = super::try_fh_to_ef(&ti_vec![
+        // Doubled-up edge.
+        let mut edges_faces = super::try_fh_to_ec(&ti_vec![
             vec![H(0), H(2), H(9)],
             vec![H(4), H(6), H(10)],
             vec![H(8), H(11)],
         ], 6);
-        edges_faces.as_mut().unwrap().iter_mut().for_each(|faces| faces.sort() );
+        edges_faces.as_mut().unwrap().iter_mut().flatten().for_each(|faces| faces.sort() );
         assert_eq!(edges_faces, Ok(ti_vec![
-            vec![SF(0)],
-            vec![SF(0)],
-            vec![SF(1)],
-            vec![SF(1)],
-            vec![SF(0), SF(2)],
-            vec![SF(1), SF(2)],
+            [vec![C(F(0), 0)], vec![]],
+            [vec![C(F(0), 1)], vec![]],
+            [vec![C(F(1), 0)], vec![]],
+            [vec![C(F(1), 1)], vec![]],
+            [vec![C(F(2), 0)], vec![C(F(0), 2)]],
+            [vec![C(F(1), 2)], vec![C(F(2), 1)]],
         ]));
     }
 

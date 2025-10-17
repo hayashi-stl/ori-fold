@@ -1,6 +1,7 @@
 use std::{fmt::{Debug, Display}, fs::File, io::BufReader, ops::Index, path::Path};
 use derive_more::{Add, AddAssign, Div, DivAssign, From, Into, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
 use exact_number::{basis::ArcBasis, BasedExpr};
+use getset::{CopyGetters, Getters};
 use indexmap::IndexMap;
 use nalgebra::DMatrix;
 use serde::{Deserialize, Serialize};
@@ -28,12 +29,14 @@ pub enum FileClass {
 pub(crate) fn version() -> String { "1.2".to_owned() }
 
 #[derive(Clone, Debug)]
+#[derive(Getters)]
 #[cfg_attr(test, derive(PartialEq))] // Really no point in this derivation outside of tests
 pub struct Fold {
     /// The version of the FOLD spec that the file assumes.
     /// **Strongly recommended**, in case we ever have to make
     /// backward-incompatible changes.
-    pub file_spec: String,
+    #[getset(get = "pub")]
+    pub(crate) file_spec: String,
     /// The software that created the file.
     /// **Recommended** for files output by computer software;
     /// less important for files made by hand.
@@ -47,6 +50,7 @@ pub struct Fold {
     /// A subjective interpretation about what the entire file represents.
     pub file_classes: Vec<FileClass>,
     /// The frames in the file. The key frame is frame 0.
+    /// Do *not* empty the list; there must always be a frame 0.
     pub file_frames: TiVec<FrameIndex, Frame>,
     /// Custom data
     pub file_custom: IndexMap<String, Value>,
@@ -359,6 +363,46 @@ impl Display for HalfEdge {
 pub struct Face(pub usize);
 impl_display_index! { impl Debug, Display for Face { "f_{}" } }
 
+/// Type-safe face corner index.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FaceCorner(pub Face, pub usize);
+
+impl FaceCorner {
+    pub fn new(face: Face, corner: usize) -> Self {
+        Self(face, corner)
+    }
+
+    pub fn face(self) -> Face {
+        self.0
+    }
+
+    pub fn corner(self) -> usize {
+        self.1
+    }
+
+    /// Gets the previous corner in the face
+    pub fn prev(self, faces: &TiSlice<Face, Vec<HalfEdge>>) -> Self {
+        Self(self.0, (self.1 + faces[self.0].len() - 1) % faces[self.0].len())
+    }
+
+    /// Gets the next corner in the face
+    pub fn next(self, faces: &TiSlice<Face, Vec<HalfEdge>>) -> Self {
+        Self(self.0, (self.1 + 1) % faces[self.0].len())
+    }
+}
+
+impl Debug for FaceCorner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "f_{}c{}", self.0.0, self.1)
+    }
+}
+
+impl Display for FaceCorner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <FaceCorner as Debug>::fmt(&self, f)
+    }
+}
+
 /// Type-safe frame index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, From, Into,
     Add, AddAssign, Sub, SubAssign, Mul, MulAssign, Div, DivAssign, Rem, RemAssign)]
@@ -367,10 +411,16 @@ impl_display_index! { impl Debug, Display for Face { "f_{}" } }
 #[serde(transparent)]
 pub struct FrameIndex(pub usize);
 
-trait AtHalfEdge {
+pub trait AtHalfEdge {
     type Output;
     // because `std::ops::Index` forces a reference to be returned
     fn at(&self, index: HalfEdge) -> Self::Output;
+}
+
+pub trait AtHalfEdgeField {
+    type Output: ?Sized;
+    fn at(&self, index: HalfEdge) -> &Self::Output;
+    fn pair_at(&self, index: HalfEdge) -> [&Self::Output; 2];
 }
 
 pub type EdgeVerticesSlice = TiSlice<Edge, [Vertex; 2]>;
@@ -385,12 +435,42 @@ impl AtHalfEdge for EdgeVerticesSlice {
     }
 }
 
+pub type EdgesFaceCornersSlice = TiSlice<Edge, [Vec<FaceCorner>; 2]>;
+
+impl AtHalfEdgeField for EdgesFaceCornersSlice {
+    type Output = [FaceCorner];
+
+    fn at(&self, index: HalfEdge) -> &Self::Output {
+        &self[index.edge()][index.flip_bit() as usize]
+    }
+
+    fn pair_at(&self, index: HalfEdge) -> [&Self::Output; 2] {
+        [self.at(index), self.at(index.flipped())]
+    }
+}
+
+pub trait AtFaceCorner {
+    type Output;
+    fn at(&self, index: FaceCorner) -> Self::Output;
+}
+
+pub type FacesHalfEdgesSlice = TiSlice<Face, Vec<HalfEdge>>;
+
+impl AtFaceCorner for FacesHalfEdgesSlice {
+    type Output = HalfEdge;
+
+    fn at(&self, index: FaceCorner) -> Self::Output {
+        self[index.0][index.1]
+    }
+}
+
 /// A FOLD frame, containing geometry information.
 /// 
 /// All operations prefer exact coordinates (`vertices_coords_exact`, `edges_fold_angle_cs`, `edges_length2_exact`),
 /// not messing with approximate coordinates (`vertices_coords_f64`, `edges_fold_angle_f64`, `edges_length_f64`) when both exist.
 #[derive(Clone, Debug)]
 #[derive(Serialize, Deserialize)]
+#[derive(Getters, CopyGetters)]
 #[cfg_attr(test, derive(PartialEq))] // Really no point in this derivation outside of tests
 #[serde(try_from = "crate::ser_de::SerDeFrame", into = "crate::ser_de::SerDeFrame")]
 pub struct Frame {
@@ -415,12 +495,14 @@ pub struct Frame {
     /// * `Cuts` and `NoCuts` are not both set.
     /// * `Joins` and `NoJoints` are not both set.
     /// * `ConvexFaces` and `NoConvexFaces` are not both set.
-    pub frame_attributes: Vec<FrameAttribute>,
+    #[getset(get = "pub")]
+    pub(crate) frame_attributes: Vec<FrameAttribute>,
     /// Physical or logical unit that all coordinates are relative to
     pub frame_unit: FrameUnit,
 
     /// The basis that exact coordinates uses.
-    pub basis: Option<ArcBasis>,
+    #[getset(get = "pub")]
+    pub(crate) basis: Option<ArcBasis>,
 
     /// For each vertex, an array of approximate coordinates,
     /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
@@ -435,7 +517,8 @@ pub struct Frame {
     ///   and `vertices_coords_exact == None`.
     /// * If `FrameAttribute::_2D` or `FrameAttribute::_3D` is set,
     ///   the coordinate dimensions match the attribute.
-    pub vertices_coords_f64: Option<DMatrix<f64>>,
+    #[getset(get = "pub")]
+    pub(crate) vertices_coords_f64: Option<DMatrix<f64>>,
     /// For each vertex, an array of exact coordinates,
     /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
     /// In higher dimensions, all trailing unspecified coordinates are implicitly
@@ -447,9 +530,11 @@ pub struct Frame {
     /// # Requirements
     /// * If `FrameAttribute::_2D` or `FrameAttribute::_3D` is set,
     ///   the coordinate dimensions match the attribute.
-    pub vertices_coords_exact: Option<DMatrix<BasedExpr>>,
+    #[getset(get = "pub")]
+    pub(crate) vertices_coords_exact: Option<DMatrix<BasedExpr>>,
     /// The number of vertices. Necessary to handle isolated vertices.
-    pub num_vertices: usize,
+    #[getset(get_copy = "pub")]
+    pub(crate) num_vertices: usize,
     /// For each vertex, an array of edge IDs for the *half-edge*s
     /// incident to the vertex.  If the frame represents an orientable manifold,
     /// this list should be ordered counterclockwise around the vertex.
@@ -459,7 +544,8 @@ pub struct Frame {
     /// `v` *to* the edge's other vertex.
     /// 
     /// This should be calculated from `edges_vertices`.
-    pub vertices_half_edges: Option<TiVec<Vertex, Vec<HalfEdge>>>,
+    #[getset(get = "pub")]
+    pub(crate) vertices_half_edges: Option<TiVec<Vertex, Vec<HalfEdge>>>,
     /// `edges_vertices`: For each edge, an array `[u, v]` of two vertex IDs for
     /// the two endpoints of the edge.  This effectively defines the *orientation*
     /// of the edge, from `u` to `v`.  (This orientation choice is arbitrary,
@@ -469,7 +555,8 @@ pub struct Frame {
     /// 
     /// # Requirements
     /// * No edge can repeat a vertex. (no self-loops)
-    pub edges_vertices: Option<TiVec<Edge, [Vertex; 2]>>,
+    #[getset(get = "pub")]
+    pub(crate) edges_vertices: Option<TiVec<Edge, [Vertex; 2]>>,
     /// For each edge, an array of face IDs for the faces incident
     /// to the edge, possibly including `None`s.
     /// For nonmanifolds in particular, the `Some()` faces should be listed in
@@ -485,9 +572,11 @@ pub struct Frame {
     /// the `None` omitted, to be consistent with the nonmanifold representation.
     /// 
     /// This should be calculated from `faces_edges`.
-    pub edges_faces: Option<TiVec<Edge, Vec<Option<Face>>>>,
+    #[getset(get = "pub")]
+    pub(crate) edges_face_corners: Option<TiVec<Edge, [Vec<FaceCorner>; 2]>>,
     /// For each edge, a string representing its fold direction assignment
-    pub edges_assignment: Option<TiVec<Edge, EdgeAssignment>>,
+    #[getset(get = "pub")]
+    pub(crate) edges_assignment: Option<TiVec<Edge, EdgeAssignment>>,
     /// For each edge, the fold angle (deviation from flatness)
     /// along each edge of the pattern.  The fold angle is a number in degrees
     /// lying in the range [-180, 180].  The fold angle is positive for
@@ -497,29 +586,34 @@ pub struct Frame {
     /// 
     /// For now, this is an `f64` regardless of `N`, because finding a good representation
     /// with `N` is tricky. `[cos(a), sin(a)]` doesn't work because -180° and 180° are both in range.
-    pub edges_fold_angle_f64: Option<TiVec<Edge, f64>>,
+    #[getset(get = "pub")]
+    pub(crate) edges_fold_angle_f64: Option<TiVec<Edge, f64>>,
     /// For each edge, the *exact* fold angle (deviation from flatness)
     /// along each edge of the pattern, written as `(negative?, cos(a), sin(a))`.
     /// Both `cos(a)` and `sin(a)` are stored to ensure they're both in `N`.
-    pub edges_fold_angle_cs: Option<TiVec<Edge, (bool, BasedExpr, BasedExpr)>>,
+    #[getset(get = "pub")]
+    pub(crate) edges_fold_angle_cs: Option<TiVec<Edge, (bool, BasedExpr, BasedExpr)>>,
 
     /// For each edge, the approximate length of the edge.
     /// This is mainly useful for defining the intrinsic geometry of
     /// abstract complexes where `vertices_coords` are unspecified;
     /// otherwise, `edges_length` can be computed from `vertices_coords`.
-    pub edges_length_f64: Option<TiVec<Edge, f64>>,
+    #[getset(get = "pub")]
+    pub(crate) edges_length_f64: Option<TiVec<Edge, f64>>,
     /// For each edge, the exact squared length of the edge.
     /// This is mainly useful for defining the intrinsic geometry of
     /// abstract complexes where `vertices_coords` are unspecified;
     /// otherwise, `edges_length` can be computed from `vertices_coords`.
-    pub edges_length2_exact: Option<TiVec<Edge, BasedExpr>>,
+    #[getset(get = "pub")]
+    pub(crate) edges_length2_exact: Option<TiVec<Edge, BasedExpr>>,
 
     /// For each face, an array *half-edge* IDs for the edges around
     /// the face *in counterclockwise order*. (See `HalfEdge`).
     /// 
     /// # Requirements
     /// * For each face, `edges_vertices[faces_half_edges[f][i]][1] == edges_vertices[faces_half_edges[f][(i+1)%n]][0]`.
-    pub faces_half_edges: Option<TiVec<Face, Vec<HalfEdge>>>,
+    #[getset(get = "pub")]
+    pub(crate) faces_half_edges: Option<TiVec<Face, Vec<HalfEdge>>>,
     
     /// An array of triples `(f, g, s)` where `f` and `g` are face IDs
     /// and `s` is a `FaceOrder`:
@@ -531,7 +625,8 @@ pub struct Frame {
     ///   (e.g., they do not overlap in their interiors).
     ///
     /// **Recommended** for frames with interior-overlapping faces.
-    pub face_orders: Option<Vec<(Face, Face, FaceOrder)>>,
+    #[getset(get = "pub")]
+    pub(crate) face_orders: Option<Vec<(Face, Face, FaceOrder)>>,
     /// An array of triples `[e, f, s]` where `e` and `f` are edge IDs
     /// and `s` is a `EdgeOrder`.
     /// * `Left` indicates that edge `e` lies locally on the *left* side of edge `f`
@@ -543,26 +638,59 @@ pub struct Frame {
     ///
     /// This property makes sense only in 2D.
     /// **Recommended** for linkage configurations with interior-overlapping edges.
-    pub edge_orders: Option<Vec<(Edge, Edge, EdgeOrder)>>,
+    #[getset(get = "pub")]
+    pub(crate) edge_orders: Option<Vec<(Edge, Edge, EdgeOrder)>>,
 
     /// Parent frame ID.  Intuitively, this frame (the child)
     /// is a modification (or, in general, is related to) the parent frame.
     /// This property is optional, but enables organizing frames into a tree
     /// structure.
-    pub frame_parent: Option<FrameIndex>,
+    #[getset(get = "pub")]
+    pub(crate) frame_parent: Option<FrameIndex>,
     /// If true, any properties in the parent frame
     /// (or recursively inherited from an ancestor) that is not overridden in
     /// this frame are automatically inherited, allowing you to avoid duplicated
     /// data in many cases.
     pub frame_inherit: Option<bool>,
     /// Vertex custom data (has key `vertices_*` in file)
-    pub vertices_custom: IndexMap<String, TiVec<Vertex, Value>>,
+    #[getset(get = "pub")]
+    pub(crate) vertices_custom: IndexMap<String, TiVec<Vertex, Value>>,
     /// Edge custom data (has key `edges_*` in file)
-    pub edges_custom: IndexMap<String, TiVec<Edge, Value>>,
+    #[getset(get = "pub")]
+    pub(crate) edges_custom: IndexMap<String, TiVec<Edge, Value>>,
     /// Face custom data (has key `faces_*` in file)
-    pub faces_custom: IndexMap<String, TiVec<Face, Value>>,
+    #[getset(get = "pub")]
+    pub(crate) faces_custom: IndexMap<String, TiVec<Face, Value>>,
     /// Custom data
     pub other_custom: IndexMap<String, Value>,
+}
+
+impl Frame {
+    /// Adds an attribute without checking that the frame stays valid.
+    /// Returns `true` if the attribute was already there.
+    pub(crate) fn add_attribute_unchecked(&mut self, attr: FrameAttribute) -> bool {
+        if self.frame_attributes.contains(&attr) {
+            true
+        } else {
+            self.frame_attributes.push(attr);
+            false
+        }
+    }
+
+    /// Gets a custom vertex field mutably. You cannot change the size of the array. 
+    pub fn vertices_custom_field_mut(&mut self, field: &str) -> Option<&mut TiSlice<Vertex, Value>> {
+        self.vertices_custom.get_mut(field).map(|v| v.as_mut_slice())
+    }
+
+    /// Gets a custom edge field mutably. You cannot change the size of the array. 
+    pub fn edges_custom_field_mut(&mut self, field: &str) -> Option<&mut TiSlice<Edge, Value>> {
+        self.edges_custom.get_mut(field).map(|v| v.as_mut_slice())
+    }
+
+    /// Gets a custom face field mutably. You cannot change the size of the array. 
+    pub fn faces_custom_field_mut(&mut self, field: &str) -> Option<&mut TiSlice<Face, Value>> {
+        self.faces_custom.get_mut(field).map(|v| v.as_mut_slice())
+    }
 }
 
 impl Default for Frame {
@@ -580,7 +708,7 @@ impl Default for Frame {
             vertices_coords_exact: Default::default(),
             vertices_half_edges: Default::default(),
             edges_vertices: Default::default(),
-            edges_faces: Default::default(),
+            edges_face_corners: Default::default(),
             edges_assignment: Default::default(),
             edges_fold_angle_f64: Default::default(),
             edges_fold_angle_cs: Default::default(),
