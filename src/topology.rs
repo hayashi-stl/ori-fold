@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use serde_json::Value;
 use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
-use crate::{filter, fold::{AtHalfEdgeField, Edge, Face, FaceCorner, Frame, FrameAttribute, HalfEdge, Vertex}, ser_de::{SerDeFold, SerDeFrame}};
+use crate::{filter, fold::{EdgesFaceCornersEx, Edge, Face, FaceCorner, Frame, FrameAttribute, HalfEdge, Vertex}, ser_de::{SerDeFold, SerDeFrame}};
 use crate::fold::AtHalfEdge;
 
 /// Given `vertices_edges` and `edges_vertices` (defining edge endpoints),

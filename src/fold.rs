@@ -415,12 +415,17 @@ pub trait AtHalfEdge {
     type Output;
     // because `std::ops::Index` forces a reference to be returned
     fn at(&self, index: HalfEdge) -> Self::Output;
+    fn try_at(&self, index: HalfEdge) -> Option<Self::Output>;
 }
 
-pub trait AtHalfEdgeField {
-    type Output: ?Sized;
-    fn at(&self, index: HalfEdge) -> &Self::Output;
-    fn pair_at(&self, index: HalfEdge) -> [&Self::Output; 2];
+pub trait EdgesFaceCornersEx {
+    fn at(&self, index: HalfEdge) -> &[FaceCorner];
+    fn at_mut(&mut self, index: HalfEdge) -> &mut Vec<FaceCorner>;
+    fn pair_at(&self, index: HalfEdge) -> [&[FaceCorner]; 2];
+    fn try_at(&self, index: HalfEdge) -> Option<&[FaceCorner]>;
+    fn try_at_mut(&mut self, index: HalfEdge) -> Option<&mut Vec<FaceCorner>>;
+    fn try_pair_at(&self, index: HalfEdge) -> Option<[&[FaceCorner]; 2]>;
+    fn half_iter_enumerated(&self) -> impl Iterator<Item = (HalfEdge, &Vec<FaceCorner>)>;
 }
 
 pub type EdgeVerticesSlice = TiSlice<Edge, [Vertex; 2]>;
@@ -429,29 +434,58 @@ impl AtHalfEdge for EdgeVerticesSlice {
     type Output = [Vertex; 2];
 
     fn at(&self, index: HalfEdge) -> Self::Output {
-        let mut result = self[index.edge()];
+        self.try_at(index).unwrap()
+    }
+
+    fn try_at(&self, index: HalfEdge) -> Option<Self::Output> {
+        let mut result = *self.get(index.edge())?;
         if index.flip_bit() { result.reverse() }
-        result
+        Some(result)
     }
 }
 
 pub type EdgesFaceCornersSlice = TiSlice<Edge, [Vec<FaceCorner>; 2]>;
 
-impl AtHalfEdgeField for EdgesFaceCornersSlice {
-    type Output = [FaceCorner];
-
-    fn at(&self, index: HalfEdge) -> &Self::Output {
-        &self[index.edge()][index.flip_bit() as usize]
+impl EdgesFaceCornersEx for EdgesFaceCornersSlice {
+    fn at(&self, index: HalfEdge) -> &[FaceCorner] {
+        self.try_at(index).unwrap()
     }
 
-    fn pair_at(&self, index: HalfEdge) -> [&Self::Output; 2] {
-        [self.at(index), self.at(index.flipped())]
+    fn at_mut(&mut self, index: HalfEdge) -> &mut Vec<FaceCorner> {
+        self.try_at_mut(index).unwrap()
+    }
+
+    fn pair_at(&self, index: HalfEdge) -> [&[FaceCorner]; 2] {
+        self.try_pair_at(index).unwrap()
+    }
+
+    fn try_at(&self, index: HalfEdge) -> Option<&[FaceCorner]> {
+        self.get(index.edge())?.get(index.flip_bit() as usize).map(|cs| cs.as_slice())
+    }
+
+    fn try_at_mut(&mut self, index: HalfEdge) -> Option<&mut Vec<FaceCorner>> {
+        self.get_mut(index.edge())?.get_mut(index.flip_bit() as usize)
+    }
+
+    fn try_pair_at(&self, index: HalfEdge) -> Option<[&[FaceCorner]; 2]> {
+        self.try_at(index).and_then(|cs| self.try_at(index.flipped()).map(|cs2| [cs, cs2]))
+    }
+
+    fn half_iter_enumerated(&self) -> impl Iterator<Item = (HalfEdge, &Vec<FaceCorner>)> {
+        self.iter_enumerated()
+            .flat_map(|(e, cs)| [
+                (HalfEdge::new(e, false), &cs[0]),
+                (HalfEdge::new(e, true), &cs[1]),
+            ])
     }
 }
 
 pub trait AtFaceCorner {
     type Output;
     fn at(&self, index: FaceCorner) -> Self::Output;
+    fn at_mut(&mut self, index: FaceCorner) -> &mut Self::Output;
+    fn try_at(&self, index: FaceCorner) -> Option<Self::Output>;
+    fn try_at_mut(&mut self, index: FaceCorner) -> Option<&mut Self::Output>;
 }
 
 pub type FacesHalfEdgesSlice = TiSlice<Face, Vec<HalfEdge>>;
@@ -460,7 +494,19 @@ impl AtFaceCorner for FacesHalfEdgesSlice {
     type Output = HalfEdge;
 
     fn at(&self, index: FaceCorner) -> Self::Output {
-        self[index.0][index.1]
+        self.try_at(index).unwrap()
+    }
+
+    fn at_mut(&mut self, index: FaceCorner) -> &mut Self::Output {
+        self.try_at_mut(index).unwrap()
+    }
+
+    fn try_at(&self, index: FaceCorner) -> Option<Self::Output> {
+        self.get(index.0)?.get(index.1).copied()
+    }
+
+    fn try_at_mut(&mut self, index: FaceCorner) -> Option<&mut Self::Output> {
+        self.get_mut(index.0)?.get_mut(index.1)
     }
 }
 
@@ -673,6 +719,17 @@ impl Frame {
             true
         } else {
             self.frame_attributes.push(attr);
+            false
+        }
+    }
+
+    /// Removes an attribute.
+    /// Returns `true` if the attribute was there to remove.
+    pub fn remove_attribute(&mut self, attr: FrameAttribute) -> bool {
+        if let Some(pos) = self.frame_attributes.iter().position(|a| a == &attr) {
+            self.frame_attributes.swap_remove(pos);
+            true
+        } else {
             false
         }
     }

@@ -17,4 +17,5 @@ derive_more = { version = "2.0.1", features = ["from", "into", "add", "add_assig
 getset = "0.1.6"
 
 [dev-dependencies]
+petgraph = "0.6"
 vf2 = "1.0.1"

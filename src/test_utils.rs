@@ -1,8 +1,27 @@
 #![cfg(test)]
 
-use typed_index_collections::TiVec;
+use typed_index_collections::{TiSlice, TiVec};
 
-use crate::{fold::{Face, Frame, HalfEdge, Vertex}, topology};
+use crate::{fold::{AtFaceCorner, Edge, EdgesFaceCornersEx, Face, FaceCorner, Frame, HalfEdge, Vertex}, topology};
+
+pub(crate) fn assert_ec_fh_consistent(ec: &TiSlice<Edge, [Vec<FaceCorner>; 2]>, fh: &TiSlice<Face, Vec<HalfEdge>>) {
+    let rip = || panic!("{ec:?} is not consistent with {fh:?}");
+
+    let mut fh_unaccounted = fh.to_vec();
+    for (h, corners) in ec.half_iter_enumerated() {
+        for &c in corners.iter() {
+            if let Some(h) = fh_unaccounted.try_at_mut(c) {
+                *h = HalfEdge(usize::MAX)
+            } else {
+                rip();
+            }
+        }
+    }
+
+    if fh_unaccounted.into_iter().any(|hs| hs.into_iter().any(|h| h != HalfEdge(usize::MAX))) {
+        rip();
+    }
+}
 
 impl Frame {
     /// Adds topology to this frame

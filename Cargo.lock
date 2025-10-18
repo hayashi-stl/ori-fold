@@ -529,6 +529,7 @@ dependencies = [
  "indexmap",
  "nalgebra",
  "num-traits",
+ "petgraph",
  "serde",
  "serde_json",
  "serde_repr",
