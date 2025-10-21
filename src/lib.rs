@@ -7,4 +7,5 @@ pub mod filter;
 pub mod geom;
 pub mod util;
 pub mod manifold;
+pub mod convert;
 mod test_utils;

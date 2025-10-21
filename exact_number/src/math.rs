@@ -709,7 +709,7 @@ impl SubsetOf<BasedExpr> for BasedExpr {
 }
 
 impl SubsetOf<BasedExpr> for f64 {
-    /// `f64` is technically not a subset of `BasedExpr`. This panics if
+    /// `f64` is technically not a subset of `BasedExpr`. This **panics** if
     /// `self` is not finite.
     fn to_superset(&self) -> BasedExpr {
         // A necessary evil to make this compatible with nalgebra. Some methods don't *really* need ComplexField.
@@ -727,7 +727,7 @@ impl SubsetOf<BasedExpr> for f64 {
 }
 
 impl SubsetOf<BasedExpr> for f32 {
-    /// `f32` is technically not a subset of `BasedExpr`. This panics if
+    /// `f32` is technically not a subset of `BasedExpr`. This **panics** if
     /// `self` is not finite.
     fn to_superset(&self) -> BasedExpr {
         // A necessary evil to make this compatible with nalgebra. Some methods don't *really* need ComplexField.

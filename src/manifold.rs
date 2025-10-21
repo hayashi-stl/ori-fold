@@ -7,7 +7,7 @@ use crate::fold::{AtFaceCorner, EdgesFaceCornersEx, Edge, Face, FaceCorner, Fram
 
 /// An error that happens when checking if a frame is a manifold
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))] // Really no point in this derivation outside of tests
+#[cfg_attr(test, derive(PartialEq, Eq, PartialOrd, Ord))] // Really no point in this derivation outside of tests
 pub enum ManifoldError {
     /// An edge is adjacent to at least 3 faces, which is too many.
     EdgeAdjacentToTooManyFaceCorners { edge: Edge, face_corners: [Vec<FaceCorner>; 2] },
@@ -31,7 +31,7 @@ impl Display for ManifoldError {
 
 /// An error that happens when checking if a frame is an orientable manifold
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))] // Really no point in this derivation outside of tests
+#[cfg_attr(test, derive(PartialEq, Eq, PartialOrd, Ord))] // Really no point in this derivation outside of tests
 pub enum OrientableError {
     NotAManifold(ManifoldError),
     /// The following faces cannot be oriented consistently.
@@ -78,6 +78,7 @@ impl Frame {
     /// Note that a frame with no faces is always a manifold according to this definition.
     pub fn try_into_manifold(mut self) -> Result<(Self, TiVec<Vertex, Vec<usize>>), Vec<ManifoldError>> {
         self.add_attribute_unchecked(FrameAttribute::Manifold);
+        self.remove_attribute(FrameAttribute::NonManifold);
 
         // Welp; now to check it.
         let (vh, ev, ef, fh) = if let (Some(vh), Some(ev), Some(ef), Some(fh)) =
@@ -202,6 +203,7 @@ impl Frame {
         self = new_self;
 
         self.add_attribute_unchecked(FrameAttribute::Orientable);
+        self.remove_attribute(FrameAttribute::NonOrientable);
 
         // Welp; now to check it.
         let (vh, _ev, ef, fh) = if let (Some(vh), Some(ev), Some(ef), Some(fh)) =
@@ -268,6 +270,7 @@ impl Frame {
 
 #[cfg(test)]
 mod test {
+    use indexmap::indexset;
     use petgraph::{Graph, Undirected};
     use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
@@ -415,7 +418,7 @@ mod test {
             ..Default::default()
         }.try_into_manifold();
         let (manifold, fans) = manifold.unwrap();
-        assert_eq!(manifold.frame_attributes, vec![FrameAttribute::Manifold]);
+        assert_eq!(manifold.frame_attributes, indexset![FrameAttribute::Manifold]);
         assert_eq!(manifold.vertices_half_edges, None);
 
         // No faces. Just a 3-star.
@@ -749,8 +752,7 @@ mod test {
             ..Default::default()
         }.try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert!(orientable.frame_attributes.contains(&FrameAttribute::Orientable));
-        assert!(orientable.frame_attributes.contains(&FrameAttribute::Manifold));
+        assert_eq!(orientable.frame_attributes, indexset![FrameAttribute::Manifold, FrameAttribute::Orientable]);
         assert_eq!(orientable.vertices_half_edges, None);
  
         // No faces. Just a 3-star.

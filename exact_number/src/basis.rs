@@ -171,6 +171,7 @@ impl Basis {
         &cell[level]
     }
 
+    /// # Panics
     /// Panics if proven to not be a basis.
     pub(crate) fn new(basis: Vec<SqrtExpr>) -> Self {
         Self::new_checked(basis).unwrap()
@@ -196,6 +197,7 @@ impl Basis {
 
     /// Creates a new internally stored basis.
     /// 
+    /// # Panics
     /// Panics if it fails to meet the requirements of `Basis`
     pub fn new_arc(basis: Vec<SqrtExpr>) -> ArcBasis {
         Self::new_arc_checked(basis).unwrap()

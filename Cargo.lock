@@ -522,6 +522,7 @@ dependencies = [
 name = "ori_fold"
 version = "0.1.0"
 dependencies = [
+ "approx",
  "derive_more",
  "exact_number",
  "float-ord",

@@ -1,1014 +1,279 @@
-use indexmap::IndexMap;
-use nalgebra::{ClosedSubAssign, DMatrix, Scalar, Vector2};
+use std::mem;
 
-use crate::{filter, fold::{CoordsRef, EdgeAssignment, Fold, Frame}, geom::{sort_by_angle_ref, AngleRep}};
+use approx::{relative_eq, relative_ne};
+use indexmap::IndexMap;
+use nalgebra::{vector, Affine2, ClosedSubAssign, DMatrix, DMatrixView, Matrix2xX, Matrix3, Point2, RealField, Reflection2, Scalar, Vector2};
+use num_traits::RefNum;
+use typed_index_collections::{ti_vec, TiSlice, TiVec};
+
+use crate::{filter, fold::{AtHalfEdge, CoordsRef, Edge, EdgeAssignment, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdgesSlice, Fold, Frame, FrameAttribute, HalfEdge, Vertex}, geom::{sort_by_angle_ref, AngleRep, MatrixView2Dyn, NumEx}, manifold::OrientableError};
 use crate::geom;
 
-/// Given `edges_vertices` (defining edge endpoints),
-/// automatically computes the `vertices_edges` property.
-/// However, note that the `vertices_edges` arrays will not be sorted in counterclockwise order.
-pub fn edges_vertices_to_vertices_edges_unsorted(edges_vertices: &[[usize; 2]], num_vertices: usize) -> Vec<Vec<usize>> {
-    let mut vertices_edges = (0..num_vertices).map(|_| vec![]).collect::<Vec<_>>();
-    for (edge, vertices) in edges_vertices.iter().copied().enumerate() {
-        for vertex in vertices {
-            vertices_edges[vertex].push(edge);
-        }
-    }
-    vertices_edges
-}
-
-#[must_use]
-pub fn sort_vertices_edges_generic<T>(mut vertices_edges: Vec<Vec<usize>>, edges_vertices: &[[usize; 2]], coords: &DMatrix<T>) -> Vec<Vec<usize>> where 
-    T: Scalar + ClosedSubAssign,
-    Vector2<T>: AngleRep,
+/// Assuming a locally flat foldable crease pattern in the xy plane
+/// (and thus an orientable manifold) without length-0 edges,
+/// computes:
+/// * the flat-folded geometry as determined by repeated reflection relative to `root_face`,
+/// * the transformation matrix mapping each face's unfolded --> folded geometry
+/// * for each face, `true` if the face got reflected and `false` otherwise.
+/// 
+/// For connected-components-by-face outside of the one in `root_face`:
+/// * the flat-folded geometry is the original geometry
+/// * the face transforms are the identity matrix
+/// * the face doesn't get reflected, so `false` for orientation
+pub fn flat_folded_geometry<T: NumEx + RealField>(
+    vertices_coords: MatrixView2Dyn<T>,
+    edges_vertices: &EdgesVerticesSlice,
+    edges_face_corners: &EdgesFaceCornersSlice,
+    faces_half_edges: &FacesHalfEdgesSlice,
+    root_face: Face,
+) -> (Matrix2xX<T>, TiVec<Face, Affine2<T>>, TiVec<Face, bool>)
+    where for<'a> &'a T: RefNum<T>
 {
-    for (i, edges) in vertices_edges.iter_mut().enumerate() {
-        geom::sort_by_angle_ref(edges, &i,
-            |e| coords.fixed_view::<2, 1>(0, filter::other_vertex(edges_vertices[*e], i)));
+    //let mut max_error2 = T::zero();
+    let mut level = vec![root_face];
+
+    let mut faces_flat_fold_transform = ti_vec![Affine2::from_matrix_unchecked(Matrix3::identity()); faces_half_edges.len()];
+    let mut faces_flat_fold_orientation = ti_vec![false; faces_half_edges.len()];
+    let mut vertices_flat_fold_coords = vertices_coords.clone().into_owned();
+    let mut faces_reached = ti_vec![false; faces_half_edges.len()];
+    let mut vertices_reached = ti_vec![false; vertices_coords.ncols()];
+    faces_reached[root_face] = true;
+
+    while !level.is_empty() {
+        let mut next_level = vec![];
+
+        for face in level {
+            let orientation = !faces_flat_fold_orientation[face];
+            for &half_edge in &faces_half_edges[face] {
+                if let Some(&FaceCorner(face_2, _)) = edges_face_corners.at(half_edge.flipped()).first() {
+                    let coords = edges_vertices.at(half_edge).map(|v| vertices_coords.column(v.0));
+                    let reflection = geom::reflect_line_matrix(coords[0].as_view(), coords[1].as_view());
+                    let transform = &faces_flat_fold_transform[face] * reflection;
+
+                    if mem::replace(&mut faces_reached[face_2], true) {
+                        //let diff = transform.matrix() - faces_flat_fold_transform[face_2].matrix();
+                        //max_error2 = max_error2
+                        //    .max(diff.fixed_view::<2, 1>(0, 0).norm_squared())
+                        //    .max(diff.fixed_view::<2, 1>(0, 1).norm_squared())
+                        //    .max(diff.fixed_view::<2, 1>(0, 2).norm_squared());
+                    } else {
+                        faces_flat_fold_transform[face_2] = transform;
+                        faces_flat_fold_orientation[face_2] = orientation;
+                        let transform = &faces_flat_fold_transform[face_2];
+
+                        for &half_edge_2 in &faces_half_edges[face_2] {
+                            for vertex_2 in edges_vertices.at(half_edge_2) {
+                                let mapped = geom::transform(transform, vertices_coords.column(vertex_2.0).as_view());
+                                if mem::replace(&mut vertices_reached[vertex_2], true) {
+                                    //max_error2 = max_error2.max((vertices_flat_fold_coords.column(vertex_2.0) - mapped).norm_squared())
+                                } else {
+                                    vertices_flat_fold_coords.set_column(vertex_2.0, &mapped);
+                                }
+                            }
+                        }
+                        next_level.push(face_2);
+                    }
+                }
+            }
+        }
+        level = next_level;
     }
-    vertices_edges
+    
+    (vertices_flat_fold_coords, faces_flat_fold_transform, faces_flat_fold_orientation)
 }
 
-/// Given `vertices_edges` and `edges_vertices`
-/// and some 2D `vertices_coords` (exact or approximate),
-/// sorts each vertices_edges array in counterclockwise order around the vertex in the plane,
-/// according to `AngleRep::angle_rep`, and returns the result.
-#[must_use]
-pub fn sort_vertices_edges(vertices_edges: Vec<Vec<usize>>, edges_vertices: &[[usize; 2]], coords: CoordsRef) -> Vec<Vec<usize>> {
-    match coords {
-        CoordsRef::Exact(c) => sort_vertices_edges_generic(vertices_edges, edges_vertices, c),
-        CoordsRef::Approx(c) => sort_vertices_edges_generic(vertices_edges, edges_vertices, c),
-    }
-}
-
-/// Given some 2D `vertices_coords` (exact or approximate)
-/// and `edges_vertices` (defining edge endpoints),
-/// automatically computes the `vertices_edges` properties and
-/// sorts them counterclockwise by angle in the plane.
-/// according to `AngleRep::angle_rep()`.
-pub fn edges_vertices_to_vertices_edges_sorted(coords: CoordsRef, edges_vertices: &[[usize; 2]]) -> Vec<Vec<usize>> {
-    let vertices_edges = edges_vertices_to_vertices_edges_unsorted(edges_vertices, coords.num_vertices());
-    sort_vertices_edges(vertices_edges, edges_vertices, coords)
-}
-
-/// Given `faces_edges` and `edges_vertices`, computes
-/// `edges_faces`.
-/// This assumes the frame is an orientable manifold,
-/// and stores each entry of `edges_faces` as [left face, right face] when viewed from the edge,
-/// with `None` used for faces that don't exist (boundary edges)
-pub fn faces_edges_to_edges_faces_orientable(faces_edges: &[Vec<Vec<usize>>], edges_vertices: &[[usize; 2]]) -> Vec<Vec<Option<usize>>> {
-    let edges_faces = vec![vec![None; 2]; edges_vertices.len()];
+/// An error resulting from trying to flat-fold geometry without taking layering into account
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq, PartialOrd, Ord))] // Really no point in this derivation outside of tests
+pub enum FlatFoldError {
+    NotOrientable(OrientableError),
+    Not2D { dims: usize },
+    NoDefinedFaces,
+    ZeroLengthEdge { edge: Edge, vertices: [Vertex; 2] },
+    VertexNotClosed { vertex: Vertex },
 }
 
 impl Frame {
-    /// Given a FOLD object frame with `edges_vertices == Some(_)` (defining edge endpoints),
-    /// automatically computes the `vertices_edges` property.
-    /// However, note that the `vertices_edges` arrays will not be sorted in counterclockwise order.
-    pub fn edges_vertices_to_vertices_edges_unsorted(&mut self) {
-        let num_vertices = self.num_vertices;
-        self.vertices_edges = Some(edges_vertices_to_vertices_edges_unsorted(
-            self.edges_vertices.as_ref().expect("edges_vertices must exist"),
-            num_vertices
-        ));
+    /// Computes the flat-folded geometry as in `Frame::try_flat_folded_geometry` without
+    /// doing any checks. Beware.
+    /// 
+    /// In particular, the following must be true:
+    /// * the frame is not just orientable, but *oriented*, with `FrameAttribute::Orientable` set
+    /// * the coordinates are 2D
+    /// * `faces_half_edges` exists (this is at least temporary)
+    /// * no edges have length 0
+    /// * all vertices are closed according to Kawasaki's theorem
+    pub fn flat_folded_geometry_unchecked<T: NumEx + RealField>(&self, root_face: Face, vertices_coords: DMatrixView<'_, T>)
+        -> (Matrix2xX<T>, TiVec<Face, Affine2<T>>, TiVec<Face, bool>) where
+        for<'a> &'a T: RefNum<T>
+    {
+        let vertices_coords = vertices_coords.fixed_rows::<2>(0);
+        let faces_half_edges = self.faces_half_edges.as_ref().unwrap();
+        let edges_face_corners = self.edges_face_corners.as_ref().unwrap();
+        let edges_vertices = self.edges_vertices.as_ref().unwrap();
+        flat_folded_geometry(vertices_coords, edges_vertices, edges_face_corners, faces_half_edges, root_face)
     }
 
-    /// Given a FOLD object with `vertices_coords_f64` or `vertices_coords_exact` is `Some(2D vectors)`
-    /// and `vertices_edges == Some(_)`,
-    /// sorts each vertices_edges array in counterclockwise order around the vertex in the plane,
-    /// according to `AngleRep::angle_rep`.
-    pub fn sort_vertices_edges(&mut self) {
-        self.vertices_edges = Some(sort_vertices_edges(
-            self.vertices_edges.take().expect("vertices_edges must exist"),
-            self.edges_vertices.as_ref().expect("edges_vertices must exist"),
-            self.coords_ref().expect("vertices_coords_exact or vertices_coords_f64 must exist")
-        ));
+    /// Computes:
+    /// * the flat-folded geometry as determined by repeated reflection relative to `root_face`,
+    /// * the transformation matrix mapping each face's unfolded --> folded geometry
+    /// * for each face, `true` if the face got reflected and `false` otherwise.
+    /// 
+    /// For connected-components-by-face outside of the one in `root_face`:
+    /// * the flat-folded geometry is the original geometry
+    /// * the face transforms are the identity matrix
+    /// * the face doesn't get reflected, so `false` for orientation
+    /// 
+    /// # Errors
+    /// Returns an error if
+    /// * the frame is not orientable
+    /// * the coordinates are not 2D
+    /// * `faces_half_edges` does not exist (this is at least temporary)
+    /// * an edge has length 0
+    /// * a vertex isn't closed according to Kawasaki's theorem
+    pub fn try_flat_folded_geometry<T: NumEx + RealField>(&self, root_face: Face, vertices_coords: DMatrixView<'_, T>)
+        -> Result<(Matrix2xX<T>, TiVec<Face, Affine2<T>>, TiVec<Face, bool>), Vec<FlatFoldError>> where
+        for<'a> &'a T: RefNum<T>
+    {
+        let orientable = if self.frame_attributes.contains(&FrameAttribute::Orientable) {
+            self
+        } else {
+            &self.clone().try_into_orientable()
+                .map_err(|e| e.into_iter().map(FlatFoldError::NotOrientable).collect::<Vec<_>>())?.0
+        };
+
+        if vertices_coords.nrows() != 2 {
+            Err(vec![FlatFoldError::Not2D { dims: vertices_coords.nrows() }])?
+        }
+        let vertices_coords = vertices_coords.fixed_rows::<2>(0);
+        let faces_half_edges = orientable.faces_half_edges.as_ref().ok_or(vec![FlatFoldError::NoDefinedFaces])?;
+        let edges_face_corners = orientable.edges_face_corners.as_ref().unwrap(); // guaranteed to exist if the above exists
+        let edges_vertices = orientable.edges_vertices.as_ref().unwrap(); // guaranteed to exist if the above exists
+        let vertices_half_edges = orientable.vertices_half_edges.as_ref().unwrap(); // guaranteed to exist if the above exists
+        let mut errors = vec![];
+
+        // Edge lengths
+        for (e, &vertices) in edges_vertices.iter_enumerated() {
+            let diff = vertices_coords.column(vertices[0].0) - vertices_coords.column(vertices[1].0);
+            if relative_eq!(diff.norm_squared(), T::zero()) {
+                errors.push(FlatFoldError::ZeroLengthEdge { edge: e, vertices: vertices })
+            }
+        }
+        if !errors.is_empty() { return Err(errors); }
+
+        // Check closure
+        for (v, half_edges) in vertices_half_edges.iter_enumerated() {
+            // Only loops matter
+            if half_edges.iter().any(|&h| edges_face_corners.at(h).is_empty()) { continue }
+
+            let mut even_faces = true;
+            let mut vector = vector![T::one(), T::zero()];
+            let coords = vertices_coords.column(v.0);
+            for &h in half_edges {
+                let other = vertices_coords.column(edges_vertices.at(h)[1].0);
+                vector = geom::reflect(vector.as_view(), (other - &coords).as_view()); // already checked for 0-length vectors
+                even_faces = !even_faces;
+            }
+
+            if !even_faces || relative_ne!(vector, vector![T::one(), T::zero()]) {
+                errors.push(FlatFoldError::VertexNotClosed { vertex: v })
+            }
+        }
+        if !errors.is_empty() { return Err(errors); }
+
+        Ok(flat_folded_geometry(vertices_coords, edges_vertices, edges_face_corners, faces_half_edges, root_face))
     }
 
-    /// Given a FOLD object frame with `vertices_coords_f64` or `vertices_coords_exact` is `Some(2D vectors)`
-    /// and `edges_vertices == Some(_)` (defining edge endpoints),
-    /// automatically computes the `vertices_vertices` and `vertices_edges` properties and
-    /// sorts them counterclockwise by angle in the plane.
-    /// according to `AngleRep::angle_rep()`.
-    pub fn edges_vertices_to_vertices_edges_sorted(&mut self) {
-        self.vertices_edges = Some(edges_vertices_to_vertices_edges_sorted(
-            self.coords_ref().expect("vertices_coords_exact or vertices_coords_f64 must exist"),
-            self.edges_vertices.as_ref().expect("edges_vertices must exist"),
-        ));
-    }
 }
 
 #[cfg(test)]
 mod test {
     use exact_number::based_expr;
-    use nalgebra::DMatrix;
+    use nalgebra::{Affine2, DMatrix, DMatrixView, Matrix2xX, RealField};
+    use num_traits::RefNum;
+    use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
-    use crate::fold::Frame;
+    use crate::{fold::{Face as F, Frame, HalfEdge as H}, geom::NumEx};
 
-    #[test]
-    fn test_edges_vertices_to_vertices_edges_no_edges() {
-        let mut frame = Frame {
-            edges_vertices: Some(vec![]),
-            ..Default::default()
+    fn flat_folded_geometry_success_test<T: NumEx + RealField>(
+        frame: Frame,
+        root_face: F,
+        coords: DMatrix<T>,
+        expected_geometry: Matrix2xX<T>,
+        expected_transforms: TiVec<F, Affine2<T>>,
+        expected_reflecteds: TiVec<F, bool>
+    ) where 
+        for<'a> &'a T: RefNum<T>
+    {
+        let result = (expected_geometry, expected_transforms, expected_reflecteds);
+        assert_eq!(frame.flat_folded_geometry_unchecked(root_face, coords.as_view()), result);
+        assert_eq!(frame.try_flat_folded_geometry(root_face, coords.as_view()), Ok(result));
+    }
+
+    macro_rules! exact_affine_2 {
+        (($($a:tt)*), ($($b:tt)*), ($($c:tt)*); ($($d:tt)*), ($($e:tt)*), ($($f:tt)*);) => {
+            nalgebra::Affine2::from_matrix_unchecked(nalgebra::matrix![
+                based_expr!($($a)*), based_expr!($($b)*), based_expr!($($c)*);
+                based_expr!($($d)*), based_expr!($($e)*), based_expr!($($f)*);
+                exact_number::BasedExpr::BASELESS_ZERO, exact_number::BasedExpr::BASELESS_ZERO, exact_number::BasedExpr::BASELESS_ONE;
+            ])
         };
-        frame.edges_vertices_to_vertices_edges_unsorted();
-        assert_eq!(frame.vertices_edges, Some(vec![]));
     }
 
     #[test]
-    fn test_edges_vertices_to_vertices_edges_star() {
-        let mut frame = Frame {
-            edges_vertices: Some(vec![
-                [0, 1],
-                [0, 2],
-                [0, 3],
-            ]),
-            ..Default::default()
-        };
-        frame.edges_vertices_to_vertices_edges_unsorted();
-        frame.vertices_edges.as_mut().unwrap()[0].sort();
-        assert_eq!(frame.vertices_edges, Some(vec![
-            vec![0, 1, 2],
-            vec![0],
-            vec![1],
-            vec![2],
-        ]));
-    }
-
-    #[test]
-    fn test_edges_vertices_to_vertices_edges_square_slash() {
-        let mut frame = Frame {
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [1, 3],
-            ]),
-            ..Default::default()
-        };
-        frame.edges_vertices_to_vertices_edges_unsorted();
-        frame.vertices_edges.as_mut().unwrap().iter_mut().for_each(|v| v.sort());
-        assert_eq!(frame.vertices_edges, Some(vec![
-            vec![0, 3],
-            vec![0, 1, 4],
-            vec![1, 2],
-            vec![2, 3, 4],
-        ]));
-    }
-
-    #[test]
-    fn test_edges_vertices_to_vertices_edges_isolated_vertex() {
-        let mut frame = Frame {
-            vertices_coords_f64: Some(DMatrix::from_vec(2, 4, vec![
-                0.0, 1.0,
-                2.0, 3.0,
-                4.0, 1.0,
-                6.0, 8.0,
-            ])),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [0, 2],
-            ]),
-            ..Default::default()
-        };
-        frame.edges_vertices_to_vertices_edges_unsorted();
-        frame.vertices_edges.as_mut().unwrap()[0].sort();
-        assert_eq!(frame.vertices_edges, Some(vec![
-            vec![0, 1],
-            vec![0],
-            vec![1],
-            vec![],
-        ]));
-    }
-
-    #[test]
-    fn test_sort_vertices_vertices_nothing() {
-        let mut frame = Frame {
-            vertices_coords_f64: Some(DMatrix::repeat(2, 0, 0.0)),
-            vertices_vertices: Some(vec![]),
-            ..Default::default()
-        };
-        frame.sort_vertices_vertices();
-        assert_eq!(frame.vertices_vertices, Some(vec![]));
-    }
-
-    #[test]
-    fn test_sort_vertices_vertices_triangle() {
-        let mut frame = Frame {
-            vertices_coords_f64: Some(DMatrix::from_vec(2, 3, vec![
-                0.0, 0.0,
-                2.0, 0.0,
-                1.0, 1.0
-            ])),
-            vertices_vertices: Some(vec![
-                vec![1, 2],
-                vec![0, 2],
-                vec![0, 1]
-            ]),
-            ..Default::default()
-        };
-        frame.sort_vertices_vertices();
-        assert_eq!(frame.vertices_vertices, Some(vec![
-            vec![1, 2],
-            vec![2, 0],
-            vec![0, 1]
-        ]));
-    }
-
-    #[test]
-    fn test_sort_vertices_vertices_triangle_prefer_exact() {
-        let mut frame = Frame {
-            vertices_coords_f64: Some(DMatrix::from_vec(2, 3, vec![
-                0.0, 0.0,
-                -2.0, 0.0,
-                -1.0, -1.0 // Intentional wrong coordinates
-            ])),
-            vertices_coords_exact: Some(DMatrix::from_vec(2, 3, vec![
-                based_expr!(0), based_expr!(0),
-                based_expr!(2), based_expr!(0),
-                based_expr!(1), based_expr!(1),
-            ])),
-            vertices_vertices: Some(vec![
-                vec![1, 2],
-                vec![0, 2],
-                vec![0, 1]
-            ]),
-            ..Default::default()
-        };
-        frame.sort_vertices_vertices();
-        assert_eq!(frame.vertices_vertices, Some(vec![
-            vec![1, 2],
-            vec![2, 0],
-            vec![0, 1]
-        ]));
-    }
-
-    #[test]
-    fn test_vertices_vertices_to_vertices_edges_single_edge() {
-        let mut frame = Frame {
-            vertices_vertices: Some(vec![
-                vec![1],
-                vec![0],
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_vertices_to_vertices_edges();
-        assert_eq!(frame.vertices_edges, Some(vec![
-            vec![0],
-            vec![0],
-        ]))
-    }
-
-    #[test]
-    fn test_vertices_vertices_to_vertices_edges_square_cross() {
-        let mut frame = Frame {
-            vertices_vertices: Some(vec![
-                vec![1, 4, 3],
-                vec![2, 4, 0],
-                vec![3, 4, 1],
-                vec![0, 4, 2],
-                vec![0, 1, 2, 3]
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [0, 4],
-                [1, 4],
-                [2, 4],
-                [3, 4]
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_vertices_to_vertices_edges();
-        assert_eq!(frame.vertices_edges, Some(vec![
-            vec![0, 4, 3],
-            vec![1, 5, 0],
-            vec![2, 6, 1],
-            vec![3, 7, 2],
-            vec![4, 5, 6, 7]
-        ]))
-    }
-
-    #[test]
-    fn test_vertices_vertices_to_faces_vertices_nothing() {
-        let mut frame = Frame {
-            vertices_vertices: Some(vec![]),
-            ..Default::default()
-        };
-        frame.vertices_vertices_to_faces_vertices();
-        assert_eq!(frame.faces_vertices, Some(vec![]));
-    }
-
-    #[test]
-    fn test_vertices_vertices_to_faces_vertices_single_face() {
-        let mut frame = Frame {
-            vertices_vertices: Some(vec![
-                vec![1, 2],
-                vec![2, 0],
-                vec![0, 1]
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_vertices_to_faces_vertices();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        if let Some(k) = faces_vertices[0].iter().position(|x| *x == 0) { faces_vertices[0].rotate_left(k) }
-        if let Some(k) = faces_vertices[1].iter().position(|x| *x == 0) { faces_vertices[1].rotate_left(k) }
-        faces_vertices.sort();
-        assert_eq!(faces_vertices, &vec![
-            vec![0, 1, 2],
-            vec![0, 2, 1]
+    fn test_flat_folded_geometry() {
+        // A simple square.
+        flat_folded_geometry_success_test(Frame {..Default::default()}.with_topology_vh_fh(Some(ti_vec![
+            vec![H(0), H(7)],
+            vec![H(2), H(1)],
+            vec![H(4), H(3)],
+            vec![H(6), H(5)],
+        ]), Some(ti_vec![
+            vec![H(0), H(2), H(4), H(6)],
+        ])), F(0), DMatrix::from_vec(2, 4, vec![
+            based_expr!(0), based_expr!(0),
+            based_expr!(1), based_expr!(0),
+            based_expr!(1), based_expr!(1),
+            based_expr!(0), based_expr!(1),
+        ]), Matrix2xX::from_vec(vec![
+            based_expr!(0), based_expr!(0),
+            based_expr!(1), based_expr!(0),
+            based_expr!(1), based_expr!(1),
+            based_expr!(0), based_expr!(1),
+        ]), ti_vec![
+            exact_affine_2![(1), (0), (0); (0), (1), (0);]
+        ], ti_vec![
+            false
         ]);
-    }
 
-    #[test]
-    fn test_vertices_vertices_to_faces_vertices_slitted_face() {
-        // 3---------2
-        // |         |
-        // |  7---6  |
-        // |  |   |  |
-        // |  4---5  |
-        // |,"       |
-        // 0---------1
-        let mut frame = Frame {
-            vertices_vertices: Some(vec![
-                vec![1, 4, 3],
-                vec![2, 0],
-                vec![3, 1],
-                vec![0, 2],
-                vec![5, 7, 0],
-                vec![6, 4],
-                vec![7, 5],
-                vec![4, 6]
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_vertices_to_faces_vertices();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        if let Some((i, _)) = faces_vertices[0].iter().enumerate().max_by_key(|(_, k)| **k) { faces_vertices[0].rotate_left(i) }
-        if let Some((i, _)) = faces_vertices[1].iter().enumerate().max_by_key(|(_, k)| **k) { faces_vertices[1].rotate_left(i) }
-        if let Some((i, _)) = faces_vertices[2].iter().enumerate().max_by_key(|(_, k)| **k) { faces_vertices[2].rotate_left(i) }
-        faces_vertices.sort();
-        assert_eq!(faces_vertices, &vec![
-            vec![3, 2, 1, 0],
-            vec![7, 4, 5, 6],
-            vec![7, 6, 5, 4, 0, 1, 2, 3, 0, 4],
+        // A square attached to a triangle.
+        flat_folded_geometry_success_test(Frame {..Default::default()}.with_topology_vh_fh(Some(ti_vec![
+            vec![H(0), H(7)],
+            vec![H(8), H(2), H(1)],
+            vec![H(4), H(3), H(11)],
+            vec![H(6), H(5)],
+            vec![H(10), H(9)],
+        ]), Some(ti_vec![
+            vec![H(0), H(2), H(4), H(6)],
+            vec![H(8), H(10), H(3)],
+        ])), F(0), DMatrix::from_vec(2, 5, vec![
+            based_expr!(0), based_expr!(0),
+            based_expr!(1), based_expr!(0),
+            based_expr!(1), based_expr!(1),
+            based_expr!(0), based_expr!(1),
+            based_expr!(7/4), based_expr!(1/2),
+        ]), Matrix2xX::from_vec(vec![
+            based_expr!(0), based_expr!(0),
+            based_expr!(1), based_expr!(0),
+            based_expr!(1), based_expr!(1),
+            based_expr!(0), based_expr!(1),
+            based_expr!(1/4), based_expr!(1/2),
+        ]), ti_vec![
+            exact_affine_2![(1), (0), (0); (0), (1), (0);],
+            exact_affine_2![(-1), (0), (2); (0), (1), (0);],
+        ], ti_vec![
+            false,
+            true,
         ]);
-    }
-
-    #[test]
-    fn test_vertices_vertices_to_faces_vertices_square_cross() {
-        let mut frame = Frame {
-            vertices_vertices: Some(vec![
-                vec![1, 4, 3],
-                vec![2, 4, 0],
-                vec![3, 4, 1],
-                vec![0, 4, 2],
-                vec![0, 1, 2, 3]
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_vertices_to_faces_vertices();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        faces_vertices.sort_by_key(|vs| (vs.len(), vs.contains(&0) && vs.contains(&3), vs.iter().sum::<usize>()));
-        if let Some(k) = faces_vertices[0].iter().position(|x| *x == 0) { faces_vertices[0].rotate_left(k) }
-        if let Some(k) = faces_vertices[1].iter().position(|x| *x == 1) { faces_vertices[1].rotate_left(k) }
-        if let Some(k) = faces_vertices[2].iter().position(|x| *x == 2) { faces_vertices[2].rotate_left(k) }
-        if let Some(k) = faces_vertices[3].iter().position(|x| *x == 3) { faces_vertices[3].rotate_left(k) }
-        if let Some(k) = faces_vertices[4].iter().position(|x| *x == 3) { faces_vertices[4].rotate_left(k) }
-        assert_eq!(faces_vertices, &vec![
-            vec![0, 1, 4],
-            vec![1, 2, 4],
-            vec![2, 3, 4],
-            vec![3, 0, 4],
-            vec![3, 2, 1, 0],
-        ]);
-    }
-
-    #[test]
-    fn test_vertices_vertices_to_faces_vertices_square_cross_3d_coords() {
-        let mut frame = Frame {
-            vertices_coords_exact: Some(DMatrix::from_vec(3, 5, vec![
-                based_expr!(0), based_expr!(0), based_expr!(0),
-                based_expr!(1), based_expr!(0), based_expr!(0),
-                based_expr!(1), based_expr!(1), based_expr!(0),
-                based_expr!(0), based_expr!(1), based_expr!(0),
-                based_expr!(1/2), based_expr!(1/2), based_expr!(0),
-            ])),
-            vertices_vertices: Some(vec![
-                vec![1, 4, 3],
-                vec![2, 4, 0],
-                vec![3, 4, 1],
-                vec![0, 4, 2],
-                vec![0, 1, 2, 3]
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_vertices_to_faces_vertices();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        faces_vertices.sort_by_key(|vs| (vs.len(), vs.contains(&0) && vs.contains(&3), vs.iter().sum::<usize>()));
-        if let Some(k) = faces_vertices[0].iter().position(|x| *x == 0) { faces_vertices[0].rotate_left(k) }
-        if let Some(k) = faces_vertices[1].iter().position(|x| *x == 1) { faces_vertices[1].rotate_left(k) }
-        if let Some(k) = faces_vertices[2].iter().position(|x| *x == 2) { faces_vertices[2].rotate_left(k) }
-        if let Some(k) = faces_vertices[3].iter().position(|x| *x == 3) { faces_vertices[3].rotate_left(k) }
-        if let Some(k) = faces_vertices[4].iter().position(|x| *x == 3) { faces_vertices[4].rotate_left(k) }
-        assert_eq!(faces_vertices, &vec![
-            vec![0, 1, 4],
-            vec![1, 2, 4],
-            vec![2, 3, 4],
-            vec![3, 0, 4],
-            vec![3, 2, 1, 0],
-        ]);
-    }
-
-    #[test]
-    fn test_vertices_vertices_to_faces_vertices_square_cross_2d_coords() {
-        let mut frame = Frame {
-            vertices_coords_exact: Some(DMatrix::from_vec(2, 5, vec![
-                based_expr!(0), based_expr!(0),
-                based_expr!(1), based_expr!(0),
-                based_expr!(1), based_expr!(1),
-                based_expr!(0), based_expr!(1),
-                based_expr!(1/2), based_expr!(1/2),
-            ])),
-            vertices_vertices: Some(vec![
-                vec![1, 4, 3],
-                vec![2, 4, 0],
-                vec![3, 4, 1],
-                vec![0, 4, 2],
-                vec![0, 1, 2, 3]
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_vertices_to_faces_vertices();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        faces_vertices.sort_by_key(|vs| (vs.len(), vs.contains(&0) && vs.contains(&3), vs.iter().sum::<usize>()));
-        if let Some(k) = faces_vertices[0].iter().position(|x| *x == 0) { faces_vertices[0].rotate_left(k) }
-        if let Some(k) = faces_vertices[1].iter().position(|x| *x == 1) { faces_vertices[1].rotate_left(k) }
-        if let Some(k) = faces_vertices[2].iter().position(|x| *x == 2) { faces_vertices[2].rotate_left(k) }
-        if let Some(k) = faces_vertices[3].iter().position(|x| *x == 3) { faces_vertices[3].rotate_left(k) }
-        assert_eq!(faces_vertices, &vec![
-            vec![0, 1, 4],
-            vec![1, 2, 4],
-            vec![2, 3, 4],
-            vec![3, 0, 4],
-        ]);
-    }
-
-    #[test]
-    fn test_vertices_edges_to_faces_vertices_edges_multi_edge() {
-        let mut frame = Frame {
-            vertices_edges: Some(vec![
-                vec![0, 2, 3],
-                vec![1, 0],
-                vec![3, 2, 1]
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [0, 2],
-                [0, 2],
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_edges_to_faces_vertices_edges();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        let faces_edges = frame.faces_edges.as_mut().unwrap();
-        if let Some(k) = faces_vertices[0].iter().position(|x| *x == 0) { faces_vertices[0].rotate_left(k) }
-        if let Some(k) = faces_vertices[1].iter().position(|x| *x == 0) { faces_vertices[1].rotate_left(k) }
-        if let Some(k) = faces_vertices[2].iter().position(|x| *x == 0) { faces_vertices[2].rotate_left(k) }
-        faces_vertices.sort();
-        faces_edges.sort_by_key(|es| es.len());
-        if let Some(k) = faces_edges[0].iter().position(|x| *x == 2) { faces_edges[0].rotate_left(k) }
-        if let Some(k) = faces_edges[1].iter().position(|x| *x == 0) { faces_edges[1].rotate_left(k) }
-        if let Some(k) = faces_edges[2].iter().position(|x| *x == 0) { faces_edges[2].rotate_left(k) }
-        faces_edges.sort();
-        assert_eq!(faces_vertices, &vec![
-            vec![0, 1, 2],
-            vec![0, 2],
-            vec![0, 2, 1],
-        ]);
-        assert_eq!(faces_edges, &vec![
-            vec![0, 1, 2],
-            vec![0, 3, 1],
-            vec![2, 3],
-        ]);
-    }
-
-    #[test]
-    fn test_vertices_edges_to_faces_vertices_edges_single_face() {
-        let mut frame = Frame {
-            vertices_edges: Some(vec![
-                vec![0, 2],
-                vec![1, 0],
-                vec![2, 1]
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [0, 2],
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_edges_to_faces_vertices_edges();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        let faces_edges = frame.faces_edges.as_mut().unwrap();
-        if let Some(k) = faces_vertices[0].iter().position(|x| *x == 0) { faces_vertices[0].rotate_left(k) }
-        if let Some(k) = faces_vertices[1].iter().position(|x| *x == 0) { faces_vertices[1].rotate_left(k) }
-        faces_vertices.sort();
-        if let Some(k) = faces_edges[0].iter().position(|x| *x == 0) { faces_edges[0].rotate_left(k) }
-        if let Some(k) = faces_edges[1].iter().position(|x| *x == 0) { faces_edges[1].rotate_left(k) }
-        faces_edges.sort();
-        assert_eq!(faces_vertices, &vec![
-            vec![0, 1, 2],
-            vec![0, 2, 1],
-        ]);
-        assert_eq!(faces_edges, &vec![
-            vec![0, 1, 2],
-            vec![0, 2, 1],
-        ]);
-    }
-
-    #[test]
-    fn test_vertices_edges_to_faces_vertices_edges_slitted_face() {
-        // 3----2----2
-        // |         |
-        // |  7-6-6  |
-        // 3  7   5  1
-        // |  4-4-5  |
-        // |,8       |
-        // 0----0----1
-        let mut frame = Frame {
-            vertices_edges: Some(vec![
-                vec![0, 8, 3],
-                vec![1, 0],
-                vec![2, 1],
-                vec![3, 2],
-                vec![4, 7, 8],
-                vec![5, 4],
-                vec![6, 5],
-                vec![7, 6],
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [4, 5],
-                [5, 6],
-                [6, 7],
-                [7, 4],
-                [0, 4],
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_edges_to_faces_vertices_edges();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        let faces_edges = frame.faces_edges.as_mut().unwrap();
-        if let Some((i, _)) = faces_vertices[0].iter().enumerate().max_by_key(|(_, k)| **k) { faces_vertices[0].rotate_left(i) }
-        if let Some((i, _)) = faces_vertices[1].iter().enumerate().max_by_key(|(_, k)| **k) { faces_vertices[1].rotate_left(i) }
-        if let Some((i, _)) = faces_vertices[2].iter().enumerate().max_by_key(|(_, k)| **k) { faces_vertices[2].rotate_left(i) }
-        faces_vertices.sort();
-        if let Some((i, _)) = faces_edges[0].iter().enumerate().min_by_key(|(_, k)| **k) { faces_edges[0].rotate_left(i) }
-        if let Some((i, _)) = faces_edges[1].iter().enumerate().min_by_key(|(_, k)| **k) { faces_edges[1].rotate_left(i) }
-        if let Some((i, _)) = faces_edges[2].iter().enumerate().min_by_key(|(_, k)| **k) { faces_edges[2].rotate_left(i) }
-        faces_edges.sort();
-        assert_eq!(faces_vertices, &vec![
-            vec![3, 2, 1, 0],
-            vec![7, 4, 5, 6],
-            vec![7, 6, 5, 4, 0, 1, 2, 3, 0, 4],
-        ]);
-        assert_eq!(faces_edges, &vec![
-            vec![0, 1, 2, 3, 8, 7, 6, 5, 4, 8],
-            vec![0, 3, 2, 1],
-            vec![4, 5, 6, 7],
-        ]);
-    }
-
-    #[test]
-    fn test_vertices_edges_to_faces_vertices_edges_square_cross() {
-        let mut frame = Frame {
-            vertices_edges: Some(vec![
-                vec![0, 4, 3],
-                vec![1, 5, 0],
-                vec![2, 6, 1],
-                vec![3, 7, 2],
-                vec![4, 5, 6, 7]
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [0, 4],
-                [1, 4],
-                [2, 4],
-                [3, 4],
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_edges_to_faces_vertices_edges();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        let faces_edges = frame.faces_edges.as_mut().unwrap();
-        faces_vertices.sort_by_key(|vs| (vs.len(), vs.contains(&0) && vs.contains(&3), vs.iter().sum::<usize>()));
-        if let Some(k) = faces_vertices[0].iter().position(|x| *x == 0) { faces_vertices[0].rotate_left(k) }
-        if let Some(k) = faces_vertices[1].iter().position(|x| *x == 1) { faces_vertices[1].rotate_left(k) }
-        if let Some(k) = faces_vertices[2].iter().position(|x| *x == 2) { faces_vertices[2].rotate_left(k) }
-        if let Some(k) = faces_vertices[3].iter().position(|x| *x == 3) { faces_vertices[3].rotate_left(k) }
-        if let Some(k) = faces_vertices[4].iter().position(|x| *x == 3) { faces_vertices[4].rotate_left(k) }
-        faces_edges.sort_by_key(|vs| (vs.len(), vs.contains(&4) && vs.contains(&7), vs.iter().sum::<usize>()));
-        if let Some(k) = faces_edges[0].iter().position(|x| *x == 0) { faces_edges[0].rotate_left(k) }
-        if let Some(k) = faces_edges[1].iter().position(|x| *x == 1) { faces_edges[1].rotate_left(k) }
-        if let Some(k) = faces_edges[2].iter().position(|x| *x == 2) { faces_edges[2].rotate_left(k) }
-        if let Some(k) = faces_edges[3].iter().position(|x| *x == 3) { faces_edges[3].rotate_left(k) }
-        if let Some(k) = faces_edges[4].iter().position(|x| *x == 3) { faces_edges[4].rotate_left(k) }
-        assert_eq!(faces_vertices, &vec![
-            vec![0, 1, 4],
-            vec![1, 2, 4],
-            vec![2, 3, 4],
-            vec![3, 0, 4],
-            vec![3, 2, 1, 0],
-        ]);
-        assert_eq!(faces_edges, &vec![
-            vec![0, 5, 4],
-            vec![1, 6, 5],
-            vec![2, 7, 6],
-            vec![3, 4, 7],
-            vec![3, 2, 1, 0],
-        ]);
-    }
-
-    #[test]
-    fn test_vertices_edges_to_faces_vertices_edges_square_cross_3d_coords() {
-        let mut frame = Frame {
-            vertices_coords_exact: Some(DMatrix::from_vec(3, 5, vec![
-                based_expr!(0), based_expr!(0), based_expr!(0),
-                based_expr!(1), based_expr!(0), based_expr!(0),
-                based_expr!(1), based_expr!(1), based_expr!(0),
-                based_expr!(0), based_expr!(1), based_expr!(0),
-                based_expr!(1/2), based_expr!(1/2), based_expr!(0),
-            ])),
-            vertices_edges: Some(vec![
-                vec![0, 4, 3],
-                vec![1, 5, 0],
-                vec![2, 6, 1],
-                vec![3, 7, 2],
-                vec![4, 5, 6, 7]
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [0, 4],
-                [1, 4],
-                [2, 4],
-                [3, 4],
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_edges_to_faces_vertices_edges();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        let faces_edges = frame.faces_edges.as_mut().unwrap();
-        faces_vertices.sort_by_key(|vs| (vs.len(), vs.contains(&0) && vs.contains(&3), vs.iter().sum::<usize>()));
-        if let Some(k) = faces_vertices[0].iter().position(|x| *x == 0) { faces_vertices[0].rotate_left(k) }
-        if let Some(k) = faces_vertices[1].iter().position(|x| *x == 1) { faces_vertices[1].rotate_left(k) }
-        if let Some(k) = faces_vertices[2].iter().position(|x| *x == 2) { faces_vertices[2].rotate_left(k) }
-        if let Some(k) = faces_vertices[3].iter().position(|x| *x == 3) { faces_vertices[3].rotate_left(k) }
-        if let Some(k) = faces_vertices[4].iter().position(|x| *x == 3) { faces_vertices[4].rotate_left(k) }
-        faces_edges.sort_by_key(|vs| (vs.len(), vs.contains(&4) && vs.contains(&7), vs.iter().sum::<usize>()));
-        if let Some(k) = faces_edges[0].iter().position(|x| *x == 0) { faces_edges[0].rotate_left(k) }
-        if let Some(k) = faces_edges[1].iter().position(|x| *x == 1) { faces_edges[1].rotate_left(k) }
-        if let Some(k) = faces_edges[2].iter().position(|x| *x == 2) { faces_edges[2].rotate_left(k) }
-        if let Some(k) = faces_edges[3].iter().position(|x| *x == 3) { faces_edges[3].rotate_left(k) }
-        if let Some(k) = faces_edges[4].iter().position(|x| *x == 3) { faces_edges[4].rotate_left(k) }
-        assert_eq!(faces_vertices, &vec![
-            vec![0, 1, 4],
-            vec![1, 2, 4],
-            vec![2, 3, 4],
-            vec![3, 0, 4],
-            vec![3, 2, 1, 0],
-        ]);
-        assert_eq!(faces_edges, &vec![
-            vec![0, 5, 4],
-            vec![1, 6, 5],
-            vec![2, 7, 6],
-            vec![3, 4, 7],
-            vec![3, 2, 1, 0],
-        ]);
-    }
-
-    #[test]
-    fn test_vertices_edges_to_faces_vertices_edges_square_cross_2d_coords() {
-        let mut frame = Frame {
-            vertices_coords_exact: Some(DMatrix::from_vec(2, 5, vec![
-                based_expr!(0), based_expr!(0),
-                based_expr!(1), based_expr!(0),
-                based_expr!(1), based_expr!(1),
-                based_expr!(0), based_expr!(1),
-                based_expr!(1/2), based_expr!(1/2),
-            ])),
-            vertices_edges: Some(vec![
-                vec![0, 4, 3],
-                vec![1, 5, 0],
-                vec![2, 6, 1],
-                vec![3, 7, 2],
-                vec![4, 5, 6, 7]
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [0, 4],
-                [1, 4],
-                [2, 4],
-                [3, 4],
-            ]),
-            ..Default::default()
-        };
-        frame.vertices_edges_to_faces_vertices_edges();
-        let faces_vertices = frame.faces_vertices.as_mut().unwrap();
-        let faces_edges = frame.faces_edges.as_mut().unwrap();
-        faces_vertices.sort_by_key(|vs| (vs.len(), vs.contains(&0) && vs.contains(&3), vs.iter().sum::<usize>()));
-        if let Some(k) = faces_vertices[0].iter().position(|x| *x == 0) { faces_vertices[0].rotate_left(k) }
-        if let Some(k) = faces_vertices[1].iter().position(|x| *x == 1) { faces_vertices[1].rotate_left(k) }
-        if let Some(k) = faces_vertices[2].iter().position(|x| *x == 2) { faces_vertices[2].rotate_left(k) }
-        if let Some(k) = faces_vertices[3].iter().position(|x| *x == 3) { faces_vertices[3].rotate_left(k) }
-        faces_edges.sort_by_key(|vs| (vs.len(), vs.contains(&4) && vs.contains(&7), vs.iter().sum::<usize>()));
-        if let Some(k) = faces_edges[0].iter().position(|x| *x == 0) { faces_edges[0].rotate_left(k) }
-        if let Some(k) = faces_edges[1].iter().position(|x| *x == 1) { faces_edges[1].rotate_left(k) }
-        if let Some(k) = faces_edges[2].iter().position(|x| *x == 2) { faces_edges[2].rotate_left(k) }
-        if let Some(k) = faces_edges[3].iter().position(|x| *x == 3) { faces_edges[3].rotate_left(k) }
-        assert_eq!(faces_vertices, &vec![
-            vec![0, 1, 4],
-            vec![1, 2, 4],
-            vec![2, 3, 4],
-            vec![3, 0, 4],
-        ]);
-        assert_eq!(faces_edges, &vec![
-            vec![0, 5, 4],
-            vec![1, 6, 5],
-            vec![2, 7, 6],
-            vec![3, 4, 7],
-        ]);
-    }
-
-    #[test]
-    fn test_edges_vertices_to_edges_faces_edges_square_cross() {
-        let mut frame = Frame {
-            faces_vertices: Some(vec![
-                vec![0, 1, 4],
-                vec![1, 2, 4],
-                vec![2, 3, 4],
-                vec![3, 0, 4]
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [0, 4],
-                [1, 4],
-                [2, 4],
-                [3, 4]
-            ]),
-            ..Default::default()
-        };
-        frame.edges_vertices_to_edges_faces_edges();
-        assert_eq!(frame.edges_faces, Some(vec![
-            vec![Some(0), None],
-            vec![Some(1), None],
-            vec![Some(2), None],
-            vec![Some(3), None],
-            vec![Some(3), Some(0)],
-            vec![Some(0), Some(1)],
-            vec![Some(1), Some(2)],
-            vec![Some(2), Some(3)]
-        ]));
-        assert_eq!(frame.faces_edges, Some(vec![
-            vec![0, 5, 4],
-            vec![1, 6, 5],
-            vec![2, 7, 6],
-            vec![3, 4, 7]
-        ]));
-    }
-
-    #[test]
-    fn test_edges_vertices_to_edges_faces_edges_single_face() {
-        let mut frame = Frame {
-            faces_vertices: Some(vec![
-                vec![0, 1, 2]
-            ]),
-            edges_vertices: Some(vec![
-                [1, 2],
-                [0, 2],
-                [0, 1],
-            ]),
-            ..Default::default()
-        };
-        frame.edges_vertices_to_edges_faces_edges();
-        assert_eq!(frame.edges_faces, Some(vec![
-            vec![Some(0), None],
-            vec![None, Some(0)],
-            vec![Some(0), None],
-        ]));
-        assert_eq!(frame.faces_edges, Some(vec![
-            vec![2, 0, 1],
-        ]));
-    }
-
-    #[test]
-    fn test_edges_vertices_to_edges_faces_edges_slitted_face() {
-        // 3----2----2
-        // |         |
-        // |  7-6-6  |
-        // 3  7   5  1
-        // |  4-4-5  |
-        // |,8       |
-        // 0----0----1
-        let mut frame = Frame {
-            faces_vertices: Some(vec![
-                vec![0, 1, 2, 3, 0, 4, 7, 6, 5, 4],
-                vec![4, 5, 6, 7],
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [4, 5],
-                [5, 6],
-                [6, 7],
-                [7, 4],
-                [0, 4],
-            ]),
-            ..Default::default()
-        };
-        frame.edges_vertices_to_edges_faces_edges();
-        assert_eq!(frame.edges_faces, Some(vec![
-            vec![Some(0), None],
-            vec![Some(0), None],
-            vec![Some(0), None],
-            vec![Some(0), None],
-            vec![Some(1), Some(0)],
-            vec![Some(1), Some(0)],
-            vec![Some(1), Some(0)],
-            vec![Some(1), Some(0)],
-            vec![Some(0), Some(0)],
-        ]));
-        assert_eq!(frame.faces_edges, Some(vec![
-            vec![0, 1, 2, 3, 8, 7, 6, 5, 4, 8],
-            vec![4, 5, 6, 7],
-        ]));
-    }
-
-    #[test]
-    fn test_faces_vertices_to_faces_edges_square_cross() {
-        let mut frame = Frame {
-            faces_vertices: Some(vec![
-                vec![0, 1, 4],
-                vec![1, 2, 4],
-                vec![2, 3, 4],
-                vec![3, 0, 4]
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [0, 4],
-                [1, 4],
-                [2, 4],
-                [3, 4]
-            ]),
-            ..Default::default()
-        };
-        frame.faces_vertices_to_faces_edges();
-        assert_eq!(frame.faces_edges, Some(vec![
-            vec![0, 5, 4],
-            vec![1, 6, 5],
-            vec![2, 7, 6],
-            vec![3, 4, 7]
-        ]));
-    }
-
-    #[test]
-    fn test_faces_vertices_to_faces_edges_single_face() {
-        let mut frame = Frame {
-            faces_vertices: Some(vec![
-                vec![0, 1, 2]
-            ]),
-            edges_vertices: Some(vec![
-                [1, 2],
-                [0, 2],
-                [0, 1],
-            ]),
-            ..Default::default()
-        };
-        frame.faces_vertices_to_faces_edges();
-        assert_eq!(frame.faces_edges, Some(vec![
-            vec![2, 0, 1],
-        ]));
-    }
-
-    #[test]
-    fn test_faces_vertices_to_faces_edges_slitted_face() {
-        // 3----2----2
-        // |         |
-        // |  7-6-6  |
-        // 3  7   5  1
-        // |  4-4-5  |
-        // |,8       |
-        // 0----0----1
-        let mut frame = Frame {
-            faces_vertices: Some(vec![
-                vec![0, 1, 2, 3, 0, 4, 7, 6, 5, 4],
-                vec![4, 5, 6, 7],
-            ]),
-            edges_vertices: Some(vec![
-                [0, 1],
-                [1, 2],
-                [2, 3],
-                [3, 0],
-                [4, 5],
-                [5, 6],
-                [6, 7],
-                [7, 4],
-                [0, 4],
-            ]),
-            ..Default::default()
-        };
-        frame.faces_vertices_to_faces_edges();
-        assert_eq!(frame.faces_edges, Some(vec![
-            vec![0, 1, 2, 3, 8, 7, 6, 5, 4, 8],
-            vec![4, 5, 6, 7],
-        ]));
-    }
-
-    #[test]
-    fn test_faces_vertices_to_edges_square_cross() {
-        let mut frame = Frame {
-            faces_vertices: Some(vec![
-                vec![0, 1, 4],
-                vec![1, 2, 4],
-                vec![2, 3, 4],
-                vec![3, 0, 4]
-            ]),
-            ..Default::default()
-        };
-        frame.faces_vertices_to_edges();
-        // Make sure the result is reasonable; too lazy to canonicalize edges
-        println!("faces_vertices_to_edges square cross:");
-        println!("    edges_vertices: {:?}", frame.edges_vertices);
-        println!("    edges_faces: {:?}", frame.edges_faces);
-        println!("    faces_edges: {:?}", frame.faces_edges);
-        println!("    edges_assignment: {:?}", frame.edges_assignment);
-    }
-
-    #[test]
-    fn test_faces_vertices_to_edges_single_face() {
-        let mut frame = Frame {
-            faces_vertices: Some(vec![
-                vec![0, 1, 2]
-            ]),
-            ..Default::default()
-        };
-        frame.faces_vertices_to_edges();
-        // Make sure the result is reasonable; too lazy to canonicalize edges
-        println!("faces_vertices_to_edges single face:");
-        println!("    edges_vertices: {:?}", frame.edges_vertices);
-        println!("    edges_faces: {:?}", frame.edges_faces);
-        println!("    faces_edges: {:?}", frame.faces_edges);
-        println!("    edges_assignment: {:?}", frame.edges_assignment);
-    }
-
-    #[test]
-    fn test_faces_vertices_to_edges_slitted_face() {
-        // 3----2----2
-        // |         |
-        // |  7-6-6  |
-        // 3  7   5  1
-        // |  4-4-5  |
-        // |,8       |
-        // 0----0----1
-        let mut frame = Frame {
-            faces_vertices: Some(vec![
-                vec![0, 1, 2, 3, 0, 4, 7, 6, 5, 4],
-                vec![4, 5, 6, 7],
-            ]),
-            ..Default::default()
-        };
-        frame.faces_vertices_to_edges();
-        // Make sure the result is reasonable; too lazy to canonicalize edges
-        println!("faces_vertices_to_edges slitted face:");
-        println!("    edges_vertices: {:?}", frame.edges_vertices);
-        println!("    edges_faces: {:?}", frame.edges_faces);
-        println!("    faces_edges: {:?}", frame.faces_edges);
-        println!("    edges_assignment: {:?}", frame.edges_assignment);
     }
 }

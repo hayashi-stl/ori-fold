@@ -2,9 +2,9 @@
 
 use typed_index_collections::{TiSlice, TiVec};
 
-use crate::{fold::{AtFaceCorner, Edge, EdgesFaceCornersEx, Face, FaceCorner, Frame, HalfEdge, Vertex}, topology};
+use crate::{fold::{AtFaceCorner, Edge, EdgesFaceCornersEx, EdgesFaceCornersSlice, Face, FaceCorner, FacesHalfEdges, FacesHalfEdgesSlice, Frame, HalfEdge, Vertex, VerticesHalfEdges}, topology};
 
-pub(crate) fn assert_ec_fh_consistent(ec: &TiSlice<Edge, [Vec<FaceCorner>; 2]>, fh: &TiSlice<Face, Vec<HalfEdge>>) {
+pub(crate) fn assert_ec_fh_consistent(ec: &EdgesFaceCornersSlice, fh: &FacesHalfEdgesSlice) {
     let rip = || panic!("{ec:?} is not consistent with {fh:?}");
 
     let mut fh_unaccounted = fh.to_vec();
@@ -30,8 +30,8 @@ impl Frame {
     /// without specifying it explicitly)
     pub(crate) fn with_topology_vh_fh(
         mut self,
-        vertices_half_edges: Option<TiVec<Vertex, Vec<HalfEdge>>>,
-        faces_half_edges: Option<TiVec<Face, Vec<HalfEdge>>>)
+        vertices_half_edges: Option<VerticesHalfEdges>,
+        faces_half_edges: Option<FacesHalfEdges>)
     -> Self {
         let edges_vertices = vertices_half_edges.as_ref().map(|vh| topology::try_vh_to_ev(&vh).unwrap());
         let mut edges_face_corners =

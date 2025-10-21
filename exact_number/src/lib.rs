@@ -208,6 +208,7 @@ impl BasedExpr {
     /// 
     /// Remember, the first term of the basis must be 1.
     /// 
+    /// # Panics
     /// Panics if the basis is:
     /// * has something other than 1 as the first term, or
     /// * is proven to have a linear dependency, or

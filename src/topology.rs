@@ -4,14 +4,14 @@ use indexmap::IndexMap;
 use serde_json::Value;
 use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
-use crate::{filter, fold::{EdgesFaceCornersEx, Edge, Face, FaceCorner, Frame, FrameAttribute, HalfEdge, Vertex}, ser_de::{SerDeFold, SerDeFrame}};
+use crate::{filter, fold::{Edge, EdgesFaceCorners, EdgesFaceCornersEx, EdgesVertices, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdges, FacesHalfEdgesSlice, Frame, FrameAttribute, HalfEdge, Vertex, VerticesHalfEdges, VerticesHalfEdgesSlice}, ser_de::{SerDeFold, SerDeFrame}};
 use crate::fold::AtHalfEdge;
 
 /// Given `vertices_edges` and `edges_vertices` (defining edge endpoints),
 /// tries to compute `vertices_half_edges`, maintaining correspondence with `vertices_edges`.
 /// The result is unique.
-pub(crate) fn try_ve_ev_to_vh(vertices_edges: &TiSlice<Vertex, Vec<Edge>>, edges_vertices: &TiSlice<Edge, [Vertex; 2]>)
-    -> Result<TiVec<Vertex, Vec<HalfEdge>>, Vec<TopologyError>>
+pub(crate) fn try_ve_ev_to_vh(vertices_edges: &TiSlice<Vertex, Vec<Edge>>, edges_vertices: &EdgesVerticesSlice)
+    -> Result<VerticesHalfEdges, Vec<TopologyError>>
 {
     let mut vertices_half_edges = ti_vec![vec![]; vertices_edges.len()];
     let mut edges_vertices_account = edges_vertices.to_vec();
@@ -49,7 +49,7 @@ pub(crate) fn try_ve_ev_to_vh(vertices_edges: &TiSlice<Vertex, Vec<Edge>>, edges
 /// tries to compute the `vertices_half_edges` and `edges_vertices` properties, with
 /// `vertices_half_edges` maintaining correspondence with `vertices_edges`.
 /// The vertex order of an edge is arbitrary. 
-pub(crate) fn try_ve_to_vh_ev(vertices_edges: &TiSlice<Vertex, Vec<Edge>>) -> Result<(TiVec<Vertex, Vec<HalfEdge>>, TiVec<Edge, [Vertex; 2]>), Vec<TopologyError>> {
+pub(crate) fn try_ve_to_vh_ev(vertices_edges: &TiSlice<Vertex, Vec<Edge>>) -> Result<(VerticesHalfEdges, EdgesVertices), Vec<TopologyError>> {
     let num_edges = vertices_edges.iter().flatten().copied().max().map(|n | n.0 + 1).unwrap_or(0);
     let mut vertices_half_edges = ti_vec![vec![]; vertices_edges.len()];
     let mut edges_vertices = ti_vec![vec![]; num_edges];
@@ -76,7 +76,7 @@ pub(crate) fn try_ve_to_vh_ev(vertices_edges: &TiSlice<Vertex, Vec<Edge>>) -> Re
 /// Given `vertices_half_edges` (defining edge endpoints),
 /// tries to compute the `edges_vertices` property.
 /// The result is unique.
-pub(crate) fn try_vh_to_ev(vertices_half_edges: &TiSlice<Vertex, Vec<HalfEdge>>) -> Result<TiVec<Edge, [Vertex; 2]>, Vec<TopologyError>> {
+pub(crate) fn try_vh_to_ev(vertices_half_edges: &VerticesHalfEdgesSlice) -> Result<EdgesVertices, Vec<TopologyError>> {
     let num_edges = vertices_half_edges.iter().flatten().copied().max().map(|h | h.edge().0 + 1).unwrap_or(0);
     let mut edges_vertices = ti_vec![[Vertex(usize::MAX); 2]; num_edges];
     let mut errors = vec![];
@@ -108,7 +108,7 @@ pub(crate) fn try_vh_to_ev(vertices_half_edges: &TiSlice<Vertex, Vec<HalfEdge>>)
 /// Given `edges_vertices` (defining edge endpoints),
 /// tries to compute the `vertices_half_edges` property.
 /// The half-edge order of a vertex is arbitrary.
-pub(crate) fn try_ev_to_vh(edges_vertices: &TiSlice<Edge, [Vertex; 2]>, num_vertices: usize) -> Result<TiVec<Vertex, Vec<HalfEdge>>, Vec<TopologyError>> {
+pub(crate) fn try_ev_to_vh(edges_vertices: &EdgesVerticesSlice, num_vertices: usize) -> Result<VerticesHalfEdges, Vec<TopologyError>> {
     let mut vertices_half_edges = ti_vec![vec![]; num_vertices];
     let mut errors = vec![];
     for (e, &[v0, v1]) in edges_vertices.iter_enumerated() {
@@ -126,8 +126,8 @@ pub(crate) fn try_ev_to_vh(edges_vertices: &TiSlice<Edge, [Vertex; 2]>, num_vert
 /// The result is unique.
 /// 
 /// For now, assumes that `edges_vertices` is valid. Call `try_ev_to_vh` to check for validity.
-pub(crate) fn try_fe_ev_to_fh(faces_edges: &TiSlice<Face, Vec<Edge>>, edges_vertices: &TiSlice<Edge, [Vertex; 2]>)
-    -> Result<TiVec<Face, Vec<HalfEdge>>, Vec<TopologyError>>
+pub(crate) fn try_fe_ev_to_fh(faces_edges: &TiSlice<Face, Vec<Edge>>, edges_vertices: &EdgesVerticesSlice)
+    -> Result<FacesHalfEdges, Vec<TopologyError>>
 {
     // TODO: Check ev again?
     let mut faces_half_edges = ti_vec![vec![]; faces_edges.len()];
@@ -178,8 +178,8 @@ pub(crate) fn try_fe_ev_to_fh(faces_edges: &TiSlice<Face, Vec<Edge>>, edges_vert
 /// The result is unique.
 /// 
 /// For now, assumes that `vertices_half_edges` is valid.
-pub(crate) fn try_fv_vh_to_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, vertices_half_edges: &TiSlice<Vertex, Vec<HalfEdge>>)
-    -> Result<TiVec<Face, Vec<HalfEdge>>, Vec<TopologyError>>
+pub(crate) fn try_fv_vh_to_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, vertices_half_edges: &VerticesHalfEdgesSlice)
+    -> Result<FacesHalfEdges, Vec<TopologyError>>
 {
     let mut faces_half_edges = ti_vec![vec![]; faces_vertices.len()];
     let mut errors = vec![];
@@ -214,7 +214,7 @@ pub(crate) fn try_fv_vh_to_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, verti
 /// 
 /// Assumes the face counts actually match.
 pub(crate) fn try_fv_fe_to_ev_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, faces_edges: &TiSlice<Face, Vec<Edge>>, num_edges: usize)
-    -> Result<(TiVec<Edge, [Vertex; 2]>, TiVec<Face, Vec<HalfEdge>>), Vec<TopologyError>>
+    -> Result<(EdgesVertices, FacesHalfEdges), Vec<TopologyError>>
 {
     let mut errors = vec![];
     let mut edges_vertices = ti_vec![[Vertex(usize::MAX); 2]; num_edges];
@@ -255,7 +255,7 @@ pub(crate) fn try_fv_fe_to_ev_fh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, fa
 /// tries to calculate `vertices_half_edges`, making up a numbering for the edges.
 /// The edge numbering, the order of half-edges in a vertex, and the direction of each half-edge are arbitrary.
 pub(crate) fn try_fv_to_vh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, num_vertices: usize)
-    -> Result<TiVec<Vertex, Vec<HalfEdge>>, Vec<TopologyError>>
+    -> Result<VerticesHalfEdges, Vec<TopologyError>>
 {
     let mut errors = vec![];
     let mut vertices_half_edges = ti_vec![vec![]; num_vertices];
@@ -286,8 +286,8 @@ pub(crate) fn try_fv_to_vh(faces_vertices: &TiSlice<Face, Vec<Vertex>>, num_vert
 /// The order of faces in each 'half-edge' is arbitrary.
 /// 
 /// For now, assumes that `faces_half_edges` is valid.
-pub(crate) fn try_fh_to_ec(faces_half_edges: &TiSlice<Face, Vec<HalfEdge>>, num_edges: usize)
-    -> Result<TiVec<Edge, [Vec<FaceCorner>; 2]>, Vec<TopologyError>>
+pub(crate) fn try_fh_to_ec(faces_half_edges: &FacesHalfEdgesSlice, num_edges: usize)
+    -> Result<EdgesFaceCorners, Vec<TopologyError>>
 {
     let mut edges_face_corners = ti_vec![[vec![], vec![]]; num_edges];
 
@@ -305,7 +305,7 @@ pub(crate) fn try_fh_to_ec(faces_half_edges: &TiSlice<Face, Vec<HalfEdge>>, num_
 /// maintaining correspondence with `vertices_vertices`.
 /// The edge numbering and the direction of each half-edge are arbitary.
 pub(crate) fn try_vv_to_vh(vertices_vertices: &TiSlice<Vertex, Vec<Vertex>>)
-    -> Result<TiVec<Vertex, Vec<HalfEdge>>, Vec<TopologyError>>
+    -> Result<VerticesHalfEdges, Vec<TopologyError>>
 {
     // TODO: Test (it's annoying to canonicalize the result value)
     let mut vertices_half_edges = vertices_vertices.iter()
@@ -526,7 +526,7 @@ impl SerDeFrame {
             self.edges_faces         .as_ref().map(|v| ("edges_faces"          .to_owned(), v.len(), true)),
             self.edges_assignment    .as_ref().map(|v| ("edges_assignment"     .to_owned(), v.len(), true)),
             self.edges_fold_angle_f64.as_ref().map(|v| ("edges_foldAngle"      .to_owned(), v.len(), true)),
-            self.edges_fold_angle_cs .as_ref().map(|v| ("edges_exact:foldAngle".to_owned(), v.len(), true)),
+            self.edges_fold_angle_exact .as_ref().map(|v| ("edges_exact:foldAngle".to_owned(), v.len(), true)),
             self.edges_length_f64    .as_ref().map(|v| ("edges_length"         .to_owned(), v.len(), true)),
             self.edges_length2_exact .as_ref().map(|v| ("edges_exact:length2"  .to_owned(), v.len(), true)),
             self.vertices_edges.as_ref().and_then(|v| v.iter().flatten().copied().max()).map(|n| ("vertices_edges".to_owned(), n.0 + 1, false)),
@@ -563,10 +563,10 @@ impl SerDeFrame {
     pub(crate) fn extract_topology(mut self, vertices_meta: Option<(usize, String)>, edges_meta: Option<(usize, String)>, faces_meta: Option<(usize, String)>)
         -> Result<(
             Self,
-            Option<TiVec<Vertex, Vec<HalfEdge>>>,
-            Option<TiVec<Edge, [Vertex; 2]>>,
-            Option<TiVec<Edge, [Vec<FaceCorner>; 2]>>,
-            Option<TiVec<Face, Vec<HalfEdge>>>
+            Option<VerticesHalfEdges>,
+            Option<EdgesVertices>,
+            Option<EdgesFaceCorners>,
+            Option<FacesHalfEdges>
         ), Vec<TopologyError>>
     {
         let num_vertices = vertices_meta.as_ref().map(|&(n, _)| n).unwrap_or(0);
@@ -653,7 +653,7 @@ impl Frame {
     /// `faces_vertices`, `faces_edges`, and `faces_faces` from this frame.
     pub fn extract_topology(mut self)
         -> Result<(Self, Option<TiVec<Vertex, Vec<Vertex>>>, Option<TiVec<Vertex, Vec<Edge>>>, Option<TiVec<Vertex, Vec<Option<Face>>>>,
-                         Option<TiVec<Edge, [Vertex; 2]>>,                                     Option<TiVec<Edge, Vec<Option<Face>>>>,
+                         Option<EdgesVertices>,                                     Option<TiVec<Edge, Vec<Option<Face>>>>,
                          Option<TiVec<Face, Vec<Vertex>>>,   Option<TiVec<Face, Vec<Edge>>>,   Option<TiVec<Face, Vec<Option<Face>>>>), String>
     {
         let vertices_half_edges = self.vertices_half_edges.take();

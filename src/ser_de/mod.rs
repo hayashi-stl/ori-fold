@@ -2,14 +2,14 @@ use std::{path::Path, sync::Arc};
 
 use exact_number::{basis::ArcBasis, rat::{Integer, Natural, Rat}, BasedExpr};
 use exact_number::malachite::base::num::basic::traits::{Zero, One};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use nalgebra::DMatrix;
 use serde::{Deserialize, Serialize};
 use serde::de::Error;
 use serde_json::{Map, Value};
 use typed_index_collections::TiVec;
 
-use crate::{fold::{Edge, EdgeAssignment, EdgeOrder, Face, FaceOrder, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit, Vertex}, ser_de::basis::deserialize};
+use crate::{geom::ExactAngle, fold::{Edge, EdgeAssignment, EdgeOrder, Face, FaceOrder, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit, Vertex}, ser_de::basis::deserialize};
 
 mod pretty;
 mod convert;
@@ -46,31 +46,20 @@ impl<'de> Deserialize<'de> for SerDeRat {
 
 #[derive(Clone, Debug)]
 #[derive(Serialize, Deserialize)]
-pub struct SerDeFold {
-    /// The version of the FOLD spec that the file assumes.
-    /// **Strongly recommended**, in case we ever have to make
-    /// backward-incompatible changes.
+pub(crate) struct SerDeFold {
     #[serde(default = "crate::fold::version")]
     #[serde(with = "crate::ser_de::file_spec")]
     pub file_spec: String,
-    /// The software that created the file.
-    /// **Recommended** for files output by computer software;
-    /// less important for files made by hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_creator: Option<String>,
-    /// The human author
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_author: Option<String>,
-    /// A title for the entire file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_title: Option<String>,
-    /// A description of the entire file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_description: Option<String>,
-    /// A subjective interpretation about what the entire file represents.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub file_classes: Vec<FileClass>,
-    /// The frames in the file
+    #[serde(default, skip_serializing_if = "IndexSet::is_empty")]
+    pub file_classes: IndexSet<FileClass>,
     #[serde(default, skip_serializing_if = "TiVec::is_empty")]
     pub file_frames: TiVec<FrameIndex, Frame>,
 }
@@ -78,212 +67,74 @@ pub struct SerDeFold {
 #[derive(Clone, Debug)]
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SerDeFrame {
-    /// The human author
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) frame_author: Option<String>,
-    /// A title for the frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) frame_title: Option<String>,
-    /// A description of the frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) frame_description: Option<String>,
-    /// A subjective interpretation about what the frame represents.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) frame_classes: Vec<FrameClass>,
-    /// Attributes that objectively describe properties of the
-    /// folded structure being represented.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) frame_attributes: Vec<FrameAttribute>,
-    /// Physical or logical unit that all coordinates are relative to
+    #[serde(default, skip_serializing_if = "IndexSet::is_empty")]
+    pub(crate) frame_classes: IndexSet<FrameClass>,
+    #[serde(default, skip_serializing_if = "IndexSet::is_empty")]
+    pub(crate) frame_attributes: IndexSet<FrameAttribute>,
     #[serde(default, skip_serializing_if = "FrameUnit::is_default")]
     pub(crate) frame_unit: FrameUnit,
 
-    /// The basis that exact coordinates uses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(with = "crate::ser_de::basis")]
     #[serde(rename = "frame_exact:basis")]
     pub(crate) basis: Option<ArcBasis>,
 
-    /// For each vertex, an array of approximate coordinates,
-    /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
-    /// In higher dimensions, all trailing unspecified coordinates are implicitly
-    /// zero.  **Recommended** except for frames with attribute `Abstract`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "vertices_coords")]
     pub(crate) vertices_coords_f64: Option<TiVec<Vertex, Vec<f64>>>,
-    /// For each vertex, an array of exact coordinates,
-    /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
-    /// In higher dimensions, all trailing unspecified coordinates are implicitly
-    /// zero.  **Recommended** except for frames with attribute `Abstract`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "vertices_exact:coords")]
     pub(crate) vertices_coords_exact: Option<TiVec<Vertex, Vec<Vec<SerDeRat>>>>,
-    /// For each vertex, an array of vertices (vertex IDs)
-    /// that are adjacent along edges.  If the frame represents an orientable
-    /// manifold or planar linkage, this list should be ordered counterclockwise
-    /// around the vertex (possibly repeating a vertex more than once).
-    /// If the frame is a nonorientable manifold, this list should be cyclically
-    /// ordered around the vertex (possibly repeating a vertex).
-    /// Otherwise, the order is arbitrary.
-    /// **Recommended** in any frame lacking `edges_vertices` property
-    /// (otherwise `vertices_vertices` can easily be computed from
-    /// `edges_vertices` as needed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) vertices_vertices: Option<TiVec<Vertex, Vec<Vertex>>>,
-    /// For each vertex, an array of edge IDs for the edges
-    /// incident to the vertex.  If the frame represents an orientable manifold,
-    /// this list should be ordered counterclockwise around the vertex.
-    /// If the frame is a nonorientable manifold, this list should be cyclically
-    /// ordered around the vertex.
-    /// In all cases, the linear order should match `vertices_vertices` if both
-    /// are specified: `vertices_edges[v][i]` should be an edge connecting vertices
-    /// `v` and `vertices_vertices[v][i]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) vertices_edges: Option<TiVec<Vertex, Vec<Edge>>>,
-    /// For each vertex, an array of face IDs for the faces
-    /// incident to the vertex, possibly including `None`s.
-    /// If the frame represents a manifold, `vertices_faces` should align with
-    /// `vertices_vertices` and/or `vertices_edges`:
-    /// `vertices_faces[v][i]` should be either
-    ///
-    /// * the face containing vertices
-    ///   `vertices_vertices[v][i]` and `vertices_vertices[v][(i+1)%d]` and
-    ///   containing edges `vertices_edges[v][i]` and `vertices_edges[v][(i+1)%d]`,
-    ///   where `d` is the degree of vertex `v`; or
-    /// * `None` if such a face doesn't exist.
-    ///
-    /// If the frame represents an orientable manifold,
-    /// this list should be ordered counterclockwise around the vertex
-    /// (possibly repeating a face more than once).  If the frame is a
-    /// nonorientable manifold, this list should be cyclically ordered around the
-    /// vertex (possibly repeating a vertex), and matching the cyclic order of
-    /// `vertices_vertices` and/or `vertices_edges` (if either is specified).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) vertices_faces: Option<TiVec<Vertex, Vec<Option<Face>>>>,
-    /// `edges_vertices`: For each edge, an array `[u, v]` of two vertex IDs for
-    /// the two endpoints of the edge.  This effectively defines the *orientation*
-    /// of the edge, from `u` to `v`.  (This orientation choice is arbitrary,
-    /// but is used to define the ordering of `edges_faces`.)
-    /// **Recommended** in frames having any `edges_...` property
-    /// (e.g., to represent mountain-valley assignment).
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) edges_vertices: Option<TiVec<Edge, [Vertex; 2]>>,
-    /// For each edge, an array of face IDs for the faces incident
-    /// to the edge, possibly including `None`s.
-    /// For nonmanifolds in particular, the `Some()` faces should be listed in
-    /// counterclockwise order around the edge,
-    /// relative to the orientation of the edge.
-    /// For manifolds, the array for each edge should be an array of length 2,
-    /// where the first entry is the face locally to the "left" of the edge
-    /// (or `None` if there is no such face) and the second entry is the face
-    /// locally to the "right" of the edge (or `None` if there is no such face);
-    /// for orientable manifolds, "left" and "right" must be consistent with the
-    /// manifold orientation given by the counterclockwise orientation of faces.
-    /// However, a boundary edge may also be represented by a length-1 array, with
-    /// the `None` omitted, to be consistent with the nonmanifold representation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) edges_faces: Option<TiVec<Edge, Vec<Option<Face>>>>,
-    /// For each edge, a string representing its fold direction assignment
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) edges_assignment: Option<TiVec<Edge, EdgeAssignment>>,
-    /// For each edge, the fold angle (deviation from flatness)
-    /// along each edge of the pattern.  The fold angle is a number in degrees
-    /// lying in the range [-180, 180].  The fold angle is positive for
-    /// valley folds, negative for mountain folds, and zero for flat, unassigned,
-    /// and border folds.  Accordingly, the sign of `edge_foldAngle` should match
-    /// `edges_assignment` if both are specified.
-    /// 
-    /// For now, this is an `f64` regardless of `N`, because finding a good representation
-    /// with `N` is tricky. `[cos(a), sin(a)]` doesn't work because -180° and 180° are both in range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edges_foldAngle")]
     pub(crate) edges_fold_angle_f64: Option<TiVec<Edge, f64>>,
-    /// For each edge, the *exact* fold angle (deviation from flatness)
-    /// along each edge of the pattern, written as `(negative?, cos(a), sin(a))`.
-    /// Both `cos(a)` and `sin(a)` are stored to ensure they're both in `N`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edges_exact:foldAngle")]
-    pub(crate) edges_fold_angle_cs: Option<TiVec<Edge, (bool, Vec<SerDeRat>, Vec<SerDeRat>)>>,
-
-    /// For each edge, the approximate length of the edge.
-    /// This is mainly useful for defining the intrinsic geometry of
-    /// abstract complexes where `vertices_coords` are unspecified;
-    /// otherwise, `edges_length` can be computed from `vertices_coords`.
+    pub(crate) edges_fold_angle_exact: Option<TiVec<Edge, (i32, Option<Vec<SerDeRat>>)>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edges_length")]
     pub(crate) edges_length_f64: Option<TiVec<Edge, f64>>,
-    /// For each edge, the exact squared length of the edge.
-    /// This is mainly useful for defining the intrinsic geometry of
-    /// abstract complexes where `vertices_coords` are unspecified;
-    /// otherwise, `edges_length` can be computed from `vertices_coords`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edges_exact:length2")]
     pub(crate) edges_length2_exact: Option<TiVec<Edge, Vec<SerDeRat>>>,
 
-    /// For each face, an array of vertex IDs for the vertices
-    /// around the face *in counterclockwise order*.  This array can repeat the
-    /// same vertex multiple times (e.g., if the face has a "slit" in it).
-    /// **Recommended** in any frame having faces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) faces_vertices: Option<TiVec<Face, Vec<Vertex>>>,
-    /// For each face, an array of edge IDs for the edges around
-    /// the face *in counterclockwise order*.  In addition to the matching cyclic
-    /// order, `faces_vertices` and `faces_edges` should align in start so that
-    /// `faces_edges[f][i]` is the edge connecting `faces_vertices[f][i]` and
-    /// `faces_vertices[f][(i+1)%d]` where `d` is the degree of face `f`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) faces_edges: Option<TiVec<Face, Vec<Edge>>>,
-    /// `faces_faces`: For each face, an array of face IDs for the faces *sharing
-    /// edges* around the face, possibly including `null`s.
-    /// If the frame is a manifold, the faces should be listed in counterclockwise
-    /// order and in the same linear order as `faces_edges` (if it is specified):
-    /// `f` and `faces_faces[f][i]` should be the faces incident to the edge
-    /// `faces_edges[f][i]`, unless that edge has no face on the other side,
-    /// in which case `faces_faces[f][i]` should be `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) faces_faces: Option<TiVec<Face, Vec<Option<Face>>>>,
     
-    /// An array of triples `(f, g, s)` where `f` and `g` are face IDs
-    /// and `s` is a `FaceOrder`:
-    /// * `Above` indicates that face `f` lies *above* face `g`,
-    ///   i.e., on the side pointed to by `g`'s normal vector in the folded state.
-    /// * `Below` indicates that face `f` lies *below* face `g`,
-    ///   i.e., on the side opposite `g`'s normal vector in the folded state.
-    /// * `Unknown` indicates that `f` and `g` have unknown stacking order
-    ///   (e.g., they do not overlap in their interiors).
-    ///
-    /// **Recommended** for frames with interior-overlapping faces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "faceOrders")]
     pub(crate) face_orders: Option<Vec<(Face, Face, FaceOrder)>>,
-    /// An array of triples `[e, f, s]` where `e` and `f` are edge IDs
-    /// and `s` is a `EdgeOrder`.
-    /// * `Left` indicates that edge `e` lies locally on the *left* side of edge `f`
-    ///   (relative to edge `f`'s orientation given by `edges_vertices`)
-    /// * `Right` indicates that edge `e` lies locally on the *right* side of edge
-    ///   `f` (relative to edge `f`'s orientation given by `edges_vertices`)
-    /// * 0 indicates that `e` and `f` have unknown stacking order
-    ///   (e.g., they do not overlap in their interiors).
-    ///
-    /// This property makes sense only in 2D.
-    /// **Recommended** for linkage configurations with interior-overlapping edges.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "edgeOrders")]
     pub(crate) edge_orders: Option<Vec<(Edge, Edge, EdgeOrder)>>,
 
-    /// Parent frame ID.  Intuitively, this frame (the child)
-    /// is a modification (or, in general, is related to) the parent frame.
-    /// This property is optional, but enables organizing frames into a tree
-    /// structure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) frame_parent: Option<FrameIndex>,
-    /// If true, any properties in the parent frame
-    /// (or recursively inherited from an ancestor) that is not overridden in
-    /// this frame are automatically inherited, allowing you to avoid duplicated
-    /// data in many cases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) frame_inherit: Option<bool>,
-    /// Custom data
     #[serde(flatten)]
     pub(crate) frame_custom: Map<String, Value>,
 }
@@ -303,7 +154,7 @@ impl TryFrom<SerDeFrame> for Frame {
     type Error = String;
 
     fn try_from(mut value: SerDeFrame) -> Result<Self, Self::Error> {
-        if (value.vertices_coords_exact.is_some() || value.edges_fold_angle_cs.is_some() || value.edges_length2_exact.is_some())
+        if (value.vertices_coords_exact.is_some() || value.edges_fold_angle_exact.is_some() || value.edges_length2_exact.is_some())
             && value.basis.is_none()
         {
             Err("exact coordinates without a basis")?
@@ -381,12 +232,12 @@ impl TryFrom<SerDeFrame> for Frame {
             edges_assignment: value.edges_assignment,
             edges_fold_angle_f64: value.edges_fold_angle_f64,
             edges_length_f64: value.edges_length_f64,
-            edges_fold_angle_cs: value.edges_fold_angle_cs
+            edges_fold_angle_exact: value.edges_fold_angle_exact
                 .map(|ls| ls.into_iter()
-                    .map(|(sign, cos, sin)|
-                        based_expr_from_de(cos, value.basis.as_ref().unwrap().clone())
-                            .and_then(|cos| based_expr_from_de(sin, value.basis.as_ref().unwrap().clone()).map(|sin| (cos, sin)))
-                            .map(|(cos, sin)| (sign, cos, sin)))
+                    .map(|(floor_num_turns, tan)|
+                        tan.map(|tan| based_expr_from_de(tan, value.basis.as_ref().unwrap().clone()))
+                            .transpose()
+                            .map(|tan| ExactAngle::new(floor_num_turns, tan)))
                     .collect::<Result<TiVec<_, _>, _>>())
                 .transpose()?,
             edges_length2_exact: value.edges_length2_exact
@@ -404,12 +255,10 @@ impl TryFrom<SerDeFrame> for Frame {
             faces_custom,
             other_custom,
         };
+
+        frame = frame.check()
+            .map_err(|e| e.into_iter().map(|e| format!("{e}\n")).collect::<String>())?;
         
-        if frame.remove_attribute(FrameAttribute::Manifold) {
-            frame = frame.try_into_manifold()
-                .map(|m| m.0)
-                .map_err(|e| e.into_iter().map(|e| format!("{e}\n")).collect::<String>())?;
-        }
         Ok(frame)
     }
 }
@@ -457,10 +306,11 @@ impl From<Frame> for SerDeFrame {
             edges_assignment: value.edges_assignment,
             edges_fold_angle_f64: value.edges_fold_angle_f64,
             edges_length_f64: value.edges_length_f64,
-            edges_fold_angle_cs: value.edges_fold_angle_cs
+            edges_fold_angle_exact: value.edges_fold_angle_exact
                 .map(|ls| ls.into_iter()
-                    .map(|(sign, cos, sin)|
-                        (sign, based_expr_to_ser(cos), based_expr_to_ser(sin)))
+                    .map(|angle| <(i32, Option<BasedExpr>)>::from(angle))
+                    .map(|(turn_value, tan)|
+                        (turn_value, tan.map(based_expr_to_ser)))
                     .collect::<TiVec<_, _>>()),
             edges_length2_exact: value.edges_length2_exact
                 .map(|ls| ls.into_iter().map(based_expr_to_ser).collect::<TiVec<_, _>>()),
@@ -597,13 +447,13 @@ pub mod basis {
 
 #[cfg(test)]
 mod test {
-    use indexmap::IndexMap;
+    use indexmap::{indexset, IndexMap, IndexSet};
     use exact_number::{based_expr, basis::{ArcBasis, Basis}, sqrt_expr};
     use nalgebra::DMatrix;
     use serde_json::{json, Value};
     use typed_index_collections::ti_vec;
 
-    use crate::fold::{EdgeAssignment, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit};
+    use crate::{geom::ExactAngle, fold::{EdgeAssignment, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit}};
     use crate::fold::{Vertex as V, Edge as E, HalfEdge as H, Face as F, FaceCorner as C};
 
     #[test]
@@ -614,7 +464,7 @@ mod test {
         assert_eq!(fold.file_author, None);
         assert_eq!(fold.file_title, None);
         assert_eq!(fold.file_description, None);
-        assert_eq!(fold.file_classes, vec![]);
+        assert_eq!(fold.file_classes, IndexSet::new());
         assert_eq!(fold.file_custom, vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
     }
 
@@ -626,7 +476,7 @@ mod test {
         assert_eq!(fold.file_author, Some("hayastl".to_owned()));
         assert_eq!(fold.file_title, Some("x".to_owned()));
         assert_eq!(fold.file_description, Some("a simple cross pattern".to_owned()));
-        assert_eq!(fold.file_classes, vec![FileClass::SingleModel]);
+        assert_eq!(fold.file_classes, indexset![FileClass::SingleModel]);
         assert_eq!(fold.file_custom, vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
     }
 
@@ -666,27 +516,24 @@ mod test {
 
     #[test]
     fn test_load_all_fields() {
-        let mut fold = Fold::from_file("test/x-all-file-data.fold").unwrap();
-        fold.key_frame_mut().frame_attributes.sort();
-        let mut expected_attributes = vec![FrameAttribute::_2D, FrameAttribute::Manifold, FrameAttribute::Orientable,
-            FrameAttribute::NonSelfTouching, FrameAttribute::NonSelfIntersecting,
-            FrameAttribute::NoCuts, FrameAttribute::NoJoins, FrameAttribute::ConvexFaces];
-        expected_attributes.sort();
+        let fold = Fold::from_file("test/x-all-file-data.fold").unwrap();
         
         assert_eq!(fold.file_spec, "1.1");
         assert_eq!(fold.file_creator, Some("oriedita".to_owned()));
         assert_eq!(fold.file_author, Some("hayastl".to_owned()));
         assert_eq!(fold.file_title, Some("x".to_owned()));
         assert_eq!(fold.file_description, Some("a simple cross pattern".to_owned()));
-        assert_eq!(fold.file_classes, vec![FileClass::SingleModel]);
+        assert_eq!(fold.file_classes, indexset![FileClass::SingleModel]);
         assert_eq!(fold.file_frames[FrameIndex(1)].frame_title, Some("Nothing".to_owned()));
         assert_eq!(fold.file_frames[FrameIndex(1)].frame_parent, Some(FrameIndex(0)));
         assert_eq!(fold.file_custom, vec![("oriedita:version".to_owned(), Value::String("1.1.3".to_owned()))].into_iter().collect::<IndexMap<_, _>>());
         assert_eq!(fold.key_frame().frame_author, Some("hayastl".to_owned()));
         assert_eq!(fold.key_frame().frame_title, Some("The Key Frame".to_owned()));
         assert_eq!(fold.key_frame().frame_description, Some("the crease pattern".to_owned()));
-        assert_eq!(fold.key_frame().frame_classes, vec![FrameClass::CreasePattern]);
-        assert_eq!(fold.key_frame().frame_attributes, expected_attributes);
+        assert_eq!(fold.key_frame().frame_classes, indexset![FrameClass::CreasePattern]);
+        assert_eq!(fold.key_frame().frame_attributes, indexset![FrameAttribute::_2D, FrameAttribute::Manifold, FrameAttribute::Orientable,
+            FrameAttribute::NonSelfTouching, FrameAttribute::NonSelfIntersecting,
+            FrameAttribute::NoCuts, FrameAttribute::NoJoins, FrameAttribute::ConvexFaces]);
         assert_eq!(fold.key_frame().frame_unit, FrameUnit::Millimeter);
         assert_eq!(fold.key_frame().basis, Some(Basis::new_arc(vec![sqrt_expr!(1)])));
         assert_eq!(fold.key_frame().vertices_coords_f64, Some(DMatrix::from_vec(2, 5, vec![
@@ -750,15 +597,15 @@ mod test {
             -180.0,
             180.0,
         ]));
-        assert_eq!(fold.key_frame().edges_fold_angle_cs, Some(ti_vec![
-            (false, based_expr!(1), based_expr!(0)),
-            (false, based_expr!(1), based_expr!(0)),
-            (false, based_expr!(1), based_expr!(0)),
-            (false, based_expr!(1), based_expr!(0)),
-            (true, based_expr!(-1), based_expr!(0)),
-            (true, based_expr!(-1), based_expr!(0)),
-            (true, based_expr!(-1), based_expr!(0)),
-            (false, based_expr!(-1), based_expr!(0)),
+        assert_eq!(fold.key_frame().edges_fold_angle_exact, Some(ti_vec![
+            ExactAngle::new( 0, Some(based_expr!(0))),
+            ExactAngle::new( 0, Some(based_expr!(0))),
+            ExactAngle::new( 0, Some(based_expr!(0))),
+            ExactAngle::new( 0, Some(based_expr!(0))),
+            ExactAngle::new(-1, Some(based_expr!(0))),
+            ExactAngle::new(-1, Some(based_expr!(0))),
+            ExactAngle::new(-1, Some(based_expr!(0))),
+            ExactAngle::new( 1, Some(based_expr!(0))),
         ]));
         assert_eq!(fold.key_frame().edges_length_f64, Some(ti_vec![
             200.0,
@@ -965,14 +812,14 @@ mod test {
             file_author: Some("hayastl".to_owned()),
             file_title: Some("x".to_owned()),
             file_description: Some("a simple cross pattern".to_owned()),
-            file_classes: vec![FileClass::SingleModel],
+            file_classes: indexset![FileClass::SingleModel],
             file_frames: ti_vec![
                 Frame {
                     frame_author: Some("hayastl".to_owned()),
                     frame_title: Some("The Key Frame".to_owned()),
                     frame_description: Some("the crease pattern".to_owned()),
-                    frame_classes: vec![FrameClass::CreasePattern],
-                    frame_attributes: vec![FrameAttribute::_2D, FrameAttribute::Manifold, FrameAttribute::Orientable,
+                    frame_classes: indexset![FrameClass::CreasePattern],
+                    frame_attributes: indexset![FrameAttribute::_2D, FrameAttribute::Manifold, FrameAttribute::Orientable,
                         FrameAttribute::NonSelfTouching, FrameAttribute::NonSelfIntersecting,
                         FrameAttribute::NoCuts, FrameAttribute::NoJoins, FrameAttribute::ConvexFaces],
                     frame_unit: FrameUnit::Millimeter,
@@ -1046,15 +893,15 @@ mod test {
                         -180.0,
                         180.0,
                     ]),
-                    edges_fold_angle_cs: Some(ti_vec![
-                        (false, based_expr!(1), based_expr!(0)),
-                        (false, based_expr!(1), based_expr!(0)),
-                        (false, based_expr!(1), based_expr!(0)),
-                        (false, based_expr!(1), based_expr!(0)),
-                        (true, based_expr!(-1), based_expr!(0)),
-                        (true, based_expr!(-1), based_expr!(0)),
-                        (true, based_expr!(-1), based_expr!(0)),
-                        (false, based_expr!(-1), based_expr!(0)),
+                    edges_fold_angle_exact: Some(ti_vec![
+                        ExactAngle::new( 0, Some(based_expr!(0))),
+                        ExactAngle::new( 0, Some(based_expr!(0))),
+                        ExactAngle::new( 0, Some(based_expr!(0))),
+                        ExactAngle::new( 0, Some(based_expr!(0))),
+                        ExactAngle::new(-1, Some(based_expr!(0))),
+                        ExactAngle::new(-1, Some(based_expr!(0))),
+                        ExactAngle::new(-1, Some(based_expr!(0))),
+                        ExactAngle::new( 1, Some(based_expr!(0))),
                     ]),
                     edges_length_f64: Some(ti_vec![
                         200.0,
