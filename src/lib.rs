@@ -9,3 +9,5 @@ pub mod util;
 pub mod manifold;
 pub mod convert;
 mod test_utils;
+
+pub use fold::*;

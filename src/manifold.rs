@@ -58,6 +58,108 @@ impl Display for OrientableError {
 }
 
 impl Frame {
+    /// Gets a partition of fans of the vertex.
+    /// 
+    /// A *fan* is a sequence of half-edges where the corresponding edges of consecutive half-edges share a face.
+    /// If the edges of the first and last half-edges also share a face, then the fan is a *loop*.
+    /// 
+    /// The returned list is a vector of tuples of (fan, is_loop).
+    /// Returns `None` if any half-edge's edge is adjacent to more than 2 faces,
+    /// because then the concept of a fan partition breaks down.
+    pub fn vertex_fans(&self, vertex: Vertex) -> Option<Vec<(Vec<HalfEdge>, bool)>> {
+        // Wow this is complicated.
+        let vh = if let Some(vh) = self.vertices_half_edges.as_ref() { vh } else {
+            return Some(vec![]);
+        };
+        let ec = if let Some(ec) = self.edges_face_corners.as_ref() { ec } else {
+            return Some(vh[vertex].iter().map(|&h| (vec![h], false)).collect());
+        };
+        let fh = self.faces_half_edges.as_ref().unwrap(); // exists if `edges_face_corners` exists
+
+        if vh[vertex].iter().any(|&h| !self.is_edge_manifold(h.edge())) {
+            return None;
+        }
+
+        let mut unvisited_h = vh[vertex].iter().copied().collect::<IndexSet<_>>();
+        let mut fans = vec![];
+
+        while !unvisited_h.is_empty() {
+            // Find a start: an edge adjacent to exactly 1 face.
+            // Otherwise, just take an edge adjacent to 2 faces; otherwise skip
+            let start = unvisited_h.iter().find(|&&h|
+                ec.at(h).len() + ec.at(h.flipped()).len() == 1).copied();
+            let start = start.or_else(|| unvisited_h.iter().find(|&&h|
+                ec.at(h).len() + ec.at(h.flipped()).len() == 2).copied());
+            let start_half_edge = if let Some(s) = start { s } else {
+                fans.extend(unvisited_h.into_iter().map(|h| (vec![h], false)));
+                return Some(fans);
+            };
+
+            // Build the fan
+            let mut curr_half_edge = start_half_edge;
+            let mut curr_face_corner = None;
+            let mut fan = vec![];
+            let mut is_loop = false;
+            loop {
+                fan.push(curr_half_edge);
+                unvisited_h.swap_remove(&curr_half_edge);
+
+                // Next half-edge
+                let corner = ec.pair_at(curr_half_edge).iter().enumerate()
+                    .flat_map(|(flip, cs)|
+                        cs.iter().map(move |&c| (flip != 0, if flip != 0 { c.next(fh) } else { c })))
+                    .find(|&(_, c)| curr_face_corner.map(|c2| c != c2).unwrap_or(true));
+                let (flip, corner) = if let Some(c) = corner { c } else { break };
+                curr_half_edge = if flip {
+                    fh.at(corner)
+                } else {
+                    fh.at(corner.prev(fh)).flipped()
+                };
+
+                curr_face_corner = Some(corner);
+
+                if curr_half_edge == start_half_edge {
+                    is_loop = true;
+                    break;
+                }
+            }
+
+            fans.push((fan, is_loop));
+        }
+        Some(fans)
+    }
+    
+    /// Gets a partition of fans of the vertex if the vertex is manifold.
+    /// See `Frame::vertex_fans`
+    pub fn vertex_fans_if_manifold(&self, vertex: Vertex) -> Option<Vec<(Vec<HalfEdge>, bool)>> {
+        let fans = if let Some(f) = self.vertex_fans(vertex) { f } else { return None };
+        if fans.len() <= 1 || fans.iter().all(|(_, is_loop)| !is_loop) { Some(fans) } else { None }
+    }
+
+    /// Checks if a vertex is manifold,
+    /// using the multiple open fans or one loop definition.
+    pub fn is_vertex_manifold(&self, vertex: Vertex) -> bool {
+        self.vertex_fans_if_manifold(vertex).is_some()
+    }
+
+    /// Checks if an edge is manifold.
+    /// An edge is manifold if it is used by at most 2 face corners.
+    /// (not faces, *face corners*, to account for the fact that sometimes
+    /// an edge is used multiple times by the same face.)
+    pub fn is_edge_manifold(&self, edge: Edge) -> bool {
+        // *much* simpler than that vertex definition
+        let ec = if let Some(ec) = self.edges_face_corners.as_ref() { ec } else { return true };
+        ec[edge][0].len() + ec[edge][1].len() <= 2
+    }
+
+    /// Checks if an edge is oriented.
+    /// An edge is oriented if it is used by at most 2 face corners,
+    /// and no two face corners wind it in the same direction.
+    pub fn is_edge_oriented(&self, edge: Edge) -> bool {
+        let ec = if let Some(ec) = self.edges_face_corners.as_ref() { ec } else { return true };
+        ec[edge][0].len() <= 1 && ec[edge][1].len() <= 1
+    }
+
     /// Tries to convert this frame into a manifold (possibly with boundary) representation.
     /// On success, every vertex will have its half-edges listed cyclically according to the fans/loop of its faces,
     /// and `FrameAttribute::Manifold` is added to the frame attributes. Nothing else changes.
@@ -103,70 +205,27 @@ impl Frame {
 
         let mut vertices_fan_boundaries = ti_vec![vec![]; vh.len()];
 
-        'vertex_loop: for (v, half_edges) in vh.iter_mut_enumerated() {
-            let mut unvisited_h = half_edges.drain(..).collect::<IndexSet<_>>();
-            vertices_fan_boundaries[v].push(0);
+        for v in (0..vh.len()).map(Vertex) {
+            let fans = if let Some(f) = self.vertex_fans_if_manifold(v) { f } else {
+                let vh = self.vertices_half_edges.as_ref().unwrap();
+                errors.push(ManifoldError::VertexFacesDoNotFormFansOrLoop {
+                    vertex: v,
+                    face_corners: vh[v].iter().map(|h| *h)
+                        .flat_map(|h| ef.at(h).iter()).copied().collect::<Vec<_>>()
+                });
+                continue;
+            };
+            let vh = self.vertices_half_edges.as_mut().unwrap();
 
-            while !unvisited_h.is_empty() {
-                // Find a start: an edge adjacent to exactly 1 face.
-                // Otherwise, just take an edge adjacent to 2 faces; otherwise skip
-                let start = unvisited_h.iter().find(|&&h|
-                    ef.at(h).len() + ef.at(h.flipped()).len() == 1).copied();
-                let start = start.or_else(|| unvisited_h.iter().find(|&&h|
-                    ef.at(h).len() + ef.at(h.flipped()).len() == 2).copied());
-                let start_half_edge = if let Some(s) = start { s } else {
-                    vertices_fan_boundaries[v].extend((half_edges.len() + 1)..=(half_edges.len() + unvisited_h.len()));
-                    half_edges.extend(unvisited_h);
-                    continue 'vertex_loop;
-                };
-
-                let mut curr_half_edge = start_half_edge;
-                let mut curr_face_corner = None;
-                let start = half_edges.len();
-                // Build the fan
-                //let mut iters = 0;
-                //println!("vertex: {}", v);
-                loop {
-                    //if iters >= 10 {
-                    //    panic!("Too many iterations!");
-                    //}
-                    //iters += 1;
-                    //println!("unaccounted: {:?}, h: {}, c: {:?}", unaccounted, curr_half_edge, curr_face_corner);
-                    half_edges.push(curr_half_edge);
-                    unvisited_h.swap_remove(&curr_half_edge);
-                    //println!("new unaccounted: {:?}", unaccounted);
-
-                    // Next half-edge
-                    let corner = ef.pair_at(curr_half_edge).iter().enumerate()
-                        .flat_map(|(flip, cs)|
-                            cs.iter().map(move |&c| (flip != 0, if flip != 0 { c.next(fh) } else { c })))
-                        .find(|&(_, c)| curr_face_corner.map(|c2| c != c2).unwrap_or(true));
-                    let (flip, corner) = if let Some(c) = corner { c } else { break };
-                    curr_half_edge = if flip {
-                        fh.at(corner)
-                    } else {
-                        fh.at(corner.prev(fh)).flipped()
-                    };
-
-                    curr_face_corner = Some(corner);
-                    //println!("new h: {}, c: {:?}", curr_half_edge, curr_face_corner);
-
-                    if curr_half_edge == start_half_edge {
-                        // This is a loop. It should *not* have anything attached to it.
-                        if start != 0 || !unvisited_h.is_empty() {
-                            errors.push(ManifoldError::VertexFacesDoNotFormFansOrLoop {
-                                vertex: v,
-                                face_corners: half_edges.into_iter().map(|h| *h)
-                                    .chain(unvisited_h)
-                                    .flat_map(|h| ef.at(h).iter()).copied().collect::<Vec<_>>()
-                            });
-                        }
-                        vertices_fan_boundaries[v].clear();
-                        continue 'vertex_loop;
-                    }
-                }
-
-                vertices_fan_boundaries[v].push(half_edges.len());
+            vh[v].clear();
+            let is_loop = fans.len() == 1 && fans[0].1;
+            for (fan, _) in fans {
+                vertices_fan_boundaries[v].push(vh[v].len());
+                vh[v].extend(fan);
+            }
+            vertices_fan_boundaries[v].push(vh[v].len());
+            if is_loop {
+                vertices_fan_boundaries[v].clear();
             }
         }
 
@@ -180,6 +239,8 @@ impl Frame {
     /// * some faces may get their orientation flipped for consistency, affecting `faces_half_edges` and `edges_face_corners`.
     ///     (specifically, the list of half-edges in a face could get reversed. It will not be permuted in a different way,
     ///     not even a cyclic permutation.)
+    /// * each connected-component-by-face will contain a face that has *not* been flipped. In particular, if a connected-component-by-face
+    ///     was already oriented, no faces in it will be flipped.
     /// * `FrameAttribute::Manifold` and `FrameAttribute::Orientable` get added to the attribute list
     /// 
     /// The result includes for each vertex, the delimiter indices of its fans. If a vertex has a loop,
@@ -274,7 +335,7 @@ mod test {
     use petgraph::{Graph, Undirected};
     use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
-    use crate::fold::{AtHalfEdge, Frame, FrameAttribute};
+    use crate::fold::{EdgesVerticesEx, Frame, FrameAttribute};
     use crate::fold::{Vertex as V, Edge as E, Face as F, HalfEdge as H, FaceCorner as C};
     use crate::manifold::{ManifoldError, OrientableError};
     use crate::test_utils::assert_ec_fh_consistent;

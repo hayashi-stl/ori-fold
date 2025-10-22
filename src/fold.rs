@@ -138,15 +138,15 @@ pub enum FrameAttribute {
     SelfIntersecting,
     /// the polyhedral complex does not have properly intersecting faces
     NonSelfIntersecting,
-    /// an edge has an assignment of `Cut` (cut/slit representing multiple `Boundary` edges)
+    /// an edge has an assignment of [`Cut`](crate::EdgeAssignment::Cut) (cut/slit representing multiple [`Boundary`](crate::EdgeAssignment::Boundary) edges)
     /// (this library treats this flag as just a note and does not check it)
     Cuts,
-    /// no edges have an assignment of `Cut` (cut/slit representing multiple `Boundary` edges)
+    /// no edges have an assignment of [`Cut`](crate::EdgeAssignment::Cut) (cut/slit representing multiple [`Boundary`](crate::EdgeAssignment::Boundary) edges)
     NoCuts,
-    /// an edge has an assignment of `Join` (join)
+    /// an edge has an assignment of [`Join`](crate::EdgeAssignment::Boundary) (join)
     /// (this library treats this flag as just a note and does not check it)
     Joins,
-    /// no edges have an assignment of `Join` (join)
+    /// no edges have an assignment of [`Join`](crate::EdgeAssignment::Boundary) (join)
     NoJoins,
     /// all faces are convex polygons
     ConvexFaces,
@@ -219,7 +219,7 @@ pub enum EdgeAssignment {
     /// unassigned/unknown crease
     #[serde(rename = "U")]
     Unassigned,
-    /// cut/slit edge (should be treated as multiple `Boundary` edges)
+    /// cut/slit edge (should be treated as multiple [`Boundary`](crate::EdgeAssignment::Boundary) edges)
     #[serde(rename = "C")]
     Cut,
     /// join edge (incident faces should be treated as a single face)
@@ -310,6 +310,13 @@ impl_display_index! { impl Debug, Display for Vertex { "v_{}" } }
 #[serde(transparent)]
 pub struct Edge(pub usize);
 impl_display_index! { impl Debug, Display for Edge { "e_{}" } }
+
+impl Edge {
+    /// Split this edge into its half-edges
+    pub fn split(self) -> [HalfEdge; 2] {
+        [HalfEdge::new(self, false), HalfEdge::new(self, true)]
+    }
+}
 
 /// Type-safe half-edge index.
 /// 
@@ -436,11 +443,11 @@ pub type EdgesCustomSlice = TiSlice<Edge, Value>;
 pub type FacesCustom = TiVec<Face, Value>;
 pub type FacesCustomSlice = TiSlice<Face, Value>;
 
-pub trait AtHalfEdge {
-    type Output;
-    // because `std::ops::Index` forces a reference to be returned
-    fn at(&self, index: HalfEdge) -> Self::Output;
-    fn try_at(&self, index: HalfEdge) -> Option<Self::Output>;
+pub trait EdgesVerticesEx {
+    fn at(&self, index: HalfEdge) -> [Vertex; 2];
+    fn at_mut(&mut self, index: HalfEdge) -> [&mut Vertex; 2];
+    fn try_at(&self, index: HalfEdge) -> Option<[Vertex; 2]>;
+    fn try_at_mut(&mut self, index: HalfEdge) -> Option<[&mut Vertex; 2]>;
 }
 
 pub trait EdgesFaceCornersEx {
@@ -454,15 +461,24 @@ pub trait EdgesFaceCornersEx {
     fn half_iter_mut_enumerated(&mut self) -> impl Iterator<Item = (HalfEdge, &mut Vec<FaceCorner>)>;
 }
 
-impl AtHalfEdge for EdgesVerticesSlice {
-    type Output = [Vertex; 2];
-
-    fn at(&self, index: HalfEdge) -> Self::Output {
+impl EdgesVerticesEx for EdgesVerticesSlice {
+    fn at(&self, index: HalfEdge) -> [Vertex; 2] {
         self.try_at(index).unwrap()
     }
 
-    fn try_at(&self, index: HalfEdge) -> Option<Self::Output> {
+    fn at_mut(&mut self, index: HalfEdge) -> [&mut Vertex; 2] {
+        self.try_at_mut(index).unwrap()
+    }
+
+    fn try_at(&self, index: HalfEdge) -> Option<[Vertex; 2]> {
         let mut result = *self.get(index.edge())?;
+        if index.flip_bit() { result.reverse() }
+        Some(result)
+    }
+
+    fn try_at_mut(&mut self, index: HalfEdge) -> Option<[&mut Vertex; 2]> {
+        let result = self.get_mut(index.edge())?;
+        let mut result = result.get_disjoint_mut([0, 1]).unwrap();
         if index.flip_bit() { result.reverse() }
         Some(result)
     }
@@ -541,7 +557,16 @@ impl AtFaceCorner for FacesHalfEdgesSlice {
     }
 }
 
-/// Vertex data. All data is documented in `Frame`
+/// A type of vertex data
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum VertexField {
+    CoordsF64,
+    CoordsExact,
+    HalfEdges,
+    Custom(String),
+}
+
+/// Vertex data. All data is documented in [`Frame`](crate::Frame)
 #[derive(Clone, Debug, PartialEq)]
 pub struct VertexData {
     pub coords_f64: Option<DVector<f64>>,
@@ -550,7 +575,32 @@ pub struct VertexData {
     pub custom: IndexMap<String, Value>,
 }
 
-/// Edge data. All data is documented in `Frame`
+impl Default for VertexData {
+    fn default() -> Self {
+        Self {
+            coords_f64: Default::default(),
+            coords_exact: Default::default(),
+            half_edges: Default::default(),
+            custom: Default::default(),
+        }
+    }
+}
+
+// A type of edge data
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EdgeField {
+    Vertices,
+    FaceCorners,
+    Assignment,
+    FoldAngleF64,
+    FoldAngleExact,
+    LengthF64,
+    Length2Exact,
+    Custom(String),
+}
+
+
+/// Edge data. All data is documented in [`Frame`](crate::Frame)
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdgeData {
     pub vertices: [Vertex; 2],
@@ -563,16 +613,51 @@ pub struct EdgeData {
     pub custom: IndexMap<String, Value>,
 }
 
-/// Face data. All data is documented in `Frame`
+impl EdgeData {
+    /// `vertices` has no meaningful default,
+    /// so just deal with this method
+    pub fn default_with_vertices(vertices: [Vertex; 2]) -> Self {
+        Self {
+            vertices,
+            face_corners: Default::default(),
+            assignment: Default::default(),
+            fold_angle_f64: Default::default(),
+            fold_angle_exact: Default::default(),
+            length_f64: Default::default(),
+            length2_exact: Default::default(),
+            custom: Default::default(),
+        }
+    }
+}
+
+/// A type of face data
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FaceField {
+    HalfEdges,
+    Custom(String),
+}
+
+/// Face data. All data is documented in [`Frame`](crate::Frame)
 #[derive(Clone, Debug, PartialEq)]
 pub struct FaceData {
     pub half_edges: Vec<HalfEdge>,
     pub custom: IndexMap<String, Value>,
 }
 
+impl FaceData {
+    /// `half_edges` has no meaningful default,
+    /// so just deal with this method
+    pub fn default_with_half_edges(half_edges: Vec<HalfEdge>) -> Self {
+        Self {
+            half_edges,
+            custom: Default::default(),
+        }
+    }
+}
+
 /// A FOLD frame, containing geometry information.
 /// 
-/// All operations prefer exact coordinates (`vertices_coords_exact`, `edges_fold_angle_cs`, `edges_length2_exact`),
+/// All operations prefer exact coordinates (`vertices_coords_exact`, `edges_fold_angle_exact`, `edges_length2_exact`),
 /// not messing with approximate coordinates (`vertices_coords_f64`, `edges_fold_angle_f64`, `edges_length_f64`) when both exist.
 #[derive(Clone, Debug)]
 #[derive(Serialize, Deserialize)]
@@ -592,16 +677,16 @@ pub struct Frame {
     /// folded structure being represented.
     /// 
     /// # Requirements
-    /// * At most 1 of `_2D`, `_3D`, and `_Abstract` are set.
-    /// * `Manifold` and `NotManifold` are not both set.
-    /// * `Orientable` and `NotManifold` are not both set.
-    /// * `Orientable` and `NotOrientable` are not both set.
-    /// * `SelfTouching` and `NotSelfTouching` are not both set.
-    /// * `SelfIntersecting` and `NotSelfTouching` are not both set.
-    /// * `SelfIntersecting` and `NotSelfIntersecting` are not both set.
-    /// * `Cuts` and `NoCuts` are not both set.
-    /// * `Joins` and `NoJoints` are not both set.
-    /// * `ConvexFaces` and `NoConvexFaces` are not both set.
+    /// * At most 1 of [`_2D`](FrameAttribute::_2D), [`_3D`](FrameAttribute::_3D), and [`Abstract`](FrameAttribute::Abstract) are set.
+    /// * [`Manifold`](FrameAttribute::Manifold) and [`NonManifold`](FrameAttribute::NonManifold) are not both set.
+    /// * [`Orientable`](FrameAttribute::Orientable) and [`NonManifold`](FrameAttribute::NonManifold) are not both set.
+    /// * [`Orientable`](FrameAttribute::Orientable) and [`NonOrientable`](FrameAttribute::NonOrientable) are not both set.
+    /// * [`SelfTouching`](FrameAttribute::SelfTouching) and [`NonSelfTouching`](FrameAttribute::NonSelfTouching) are not both set.
+    /// * [`SelfIntersecting`](FrameAttribute::SelfIntersecting) and [`NonSelfTouching`](FrameAttribute::NonSelfTouching) are not both set.
+    /// * [`SelfIntersecting`](FrameAttribute::SelfIntersecting) and [`NonSelfIntersecting`](FrameAttribute::NonSelfIntersecting) are not both set.
+    /// * [`Cuts`](FrameAttribute::Cuts) and [`NoCuts`](FrameAttribute::NoCuts) are not both set.
+    /// * [`Joins`](FrameAttribute::Joins) and [`NoJoins`](FrameAttribute::NoJoins) are not both set.
+    /// * [`ConvexFaces`](FrameAttribute::ConvexFaces) and [`NonConvexFaces`](FrameAttribute::NonConvexFaces) are not both set.
     #[getset(get = "pub")]
     pub(crate) frame_attributes: IndexSet<FrameAttribute>,
     /// Physical or logical unit that all coordinates are relative to
@@ -623,9 +708,9 @@ pub struct Frame {
     /// **Recommended** except for frames with attribute `Abstract`.
     /// 
     /// # Requirements
-    /// * **Exists** if `FrameAttribute::_2D` or `FrameAttribute::_3D` is set
+    /// * **Exists** if [`_2D`](FrameAttribute::_2D) or [`_3D`](FrameAttribute::_3D) is set
     ///   and `vertices_coords_exact == None`.
-    /// * If `FrameAttribute::_2D` or `FrameAttribute::_3D` is set,
+    /// * If [`_2D`](FrameAttribute::_2D) or [`_3D`](FrameAttribute::_3D) is set,
     ///   the coordinate dimensions match the attribute.
     #[getset(get = "pub")]
     pub(crate) vertices_coords_f64: Option<DMatrix<f64>>,
@@ -641,7 +726,7 @@ pub struct Frame {
     /// **Recommended** except for frames with attribute `Abstract`.
     /// 
     /// # Requirements
-    /// * If `FrameAttribute::_2D` or `FrameAttribute::_3D` is set,
+    /// * If [`_2D`](FrameAttribute::_2D) or [`_3D`](FrameAttribute::_3D) is set,
     ///   the coordinate dimensions match the attribute.
     #[getset(get = "pub")]
     pub(crate) vertices_coords_exact: Option<DMatrix<BasedExpr>>,
@@ -717,24 +802,24 @@ pub struct Frame {
     pub(crate) faces_half_edges: Option<FacesHalfEdges>,
     
     /// An array of triples `(f, g, s)` where `f` and `g` are face IDs
-    /// and `s` is a `FaceOrder`:
-    /// * `Above` indicates that face `f` lies *above* face `g`,
+    /// and `s` is a [`FaceOrder`]:
+    /// * [`Above`](FaceOrder::Above) indicates that face `f` lies *above* face `g`,
     ///   i.e., on the side pointed to by `g`'s normal vector in the folded state.
-    /// * `Below` indicates that face `f` lies *below* face `g`,
+    /// * [`Below`](FaceOrder::Below) indicates that face `f` lies *below* face `g`,
     ///   i.e., on the side opposite `g`'s normal vector in the folded state.
-    /// * `Unknown` indicates that `f` and `g` have unknown stacking order
+    /// * [`Unknown`](FaceOrder::Unknown) indicates that `f` and `g` have unknown stacking order
     ///   (e.g., they do not overlap in their interiors).
     ///
     /// **Recommended** for frames with interior-overlapping faces.
     #[getset(get = "pub")]
     pub(crate) face_orders: Option<Vec<(Face, Face, FaceOrder)>>,
     /// An array of triples `[e, f, s]` where `e` and `f` are edge IDs
-    /// and `s` is a `EdgeOrder`.
-    /// * `Left` indicates that edge `e` lies locally on the *left* side of edge `f`
+    /// and `s` is a [`EdgeOrder`].
+    /// * [`Left`](EdgeOrder::Left) indicates that edge `e` lies locally on the *left* side of edge `f`
     ///   (relative to edge `f`'s orientation given by `edges_vertices`)
-    /// * `Right` indicates that edge `e` lies locally on the *right* side of edge
+    /// * [`Right`](EdgeOrder::Right) indicates that edge `e` lies locally on the *right* side of edge
     ///   `f` (relative to edge `f`'s orientation given by `edges_vertices`)
-    /// * 0 indicates that `e` and `f` have unknown stacking order
+    /// * [`Unknown`](EdgeOrder::Unknown) indicates that `e` and `f` have unknown stacking order
     ///   (e.g., they do not overlap in their interiors).
     ///
     /// This property makes sense only in 2D.

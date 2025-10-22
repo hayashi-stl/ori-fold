@@ -5,7 +5,7 @@ use serde_json::Value;
 use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
 use crate::{filter, fold::{Edge, EdgesFaceCorners, EdgesFaceCornersEx, EdgesVertices, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdges, FacesHalfEdgesSlice, Frame, FrameAttribute, HalfEdge, Vertex, VerticesHalfEdges, VerticesHalfEdgesSlice}, ser_de::{SerDeFold, SerDeFrame}};
-use crate::fold::AtHalfEdge;
+use crate::fold::EdgesVerticesEx;
 
 /// Given `vertices_edges` and `edges_vertices` (defining edge endpoints),
 /// tries to compute `vertices_half_edges`, maintaining correspondence with `vertices_edges`.
