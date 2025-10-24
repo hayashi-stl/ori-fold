@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc};
 
-use exact_number::{basis::ArcBasis, rat::{Integer, Natural, Rat}, BasedExpr};
+use exact_number::{basis::ArcBasis, rat::{Integer, Natural, Rat}, BasedExpr, Angle};
 use exact_number::malachite::base::num::basic::traits::{Zero, One};
 use indexmap::{IndexMap, IndexSet};
 use nalgebra::DMatrix;
@@ -9,7 +9,7 @@ use serde::de::Error;
 use serde_json::{Map, Value};
 use typed_index_collections::TiVec;
 
-use crate::{geom::ExactAngle, fold::{Edge, EdgeAssignment, EdgeOrder, Face, FaceOrder, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit, Vertex}, ser_de::basis::deserialize};
+use crate::{fold::{Edge, EdgeAssignment, EdgeOrder, Face, FaceOrder, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit, Vertex}, ser_de::basis::deserialize};
 
 mod pretty;
 mod convert;
@@ -237,7 +237,7 @@ impl TryFrom<SerDeFrame> for Frame {
                     .map(|(floor_num_turns, tan)|
                         tan.map(|tan| based_expr_from_de(tan, value.basis.as_ref().unwrap().clone()))
                             .transpose()
-                            .map(|tan| ExactAngle::new(floor_num_turns, tan)))
+                            .map(|tan| Angle::new(floor_num_turns, tan)))
                     .collect::<Result<TiVec<_, _>, _>>())
                 .transpose()?,
             edges_length2_exact: value.edges_length2_exact
@@ -308,7 +308,7 @@ impl From<Frame> for SerDeFrame {
             edges_length_f64: value.edges_length_f64,
             edges_fold_angle_exact: value.edges_fold_angle_exact
                 .map(|ls| ls.into_iter()
-                    .map(|angle| <(i32, Option<BasedExpr>)>::from(angle))
+                    .map(|angle| angle.into_turn_value_tan())
                     .map(|(turn_value, tan)|
                         (turn_value, tan.map(based_expr_to_ser)))
                     .collect::<TiVec<_, _>>()),
@@ -448,12 +448,12 @@ pub mod basis {
 #[cfg(test)]
 mod test {
     use indexmap::{indexset, IndexMap, IndexSet};
-    use exact_number::{based_expr, basis::{ArcBasis, Basis}, sqrt_expr};
+    use exact_number::{based_expr, basis::{ArcBasis, Basis}, sqrt_expr, Angle};
     use nalgebra::DMatrix;
     use serde_json::{json, Value};
     use typed_index_collections::ti_vec;
 
-    use crate::{geom::ExactAngle, fold::{EdgeAssignment, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit}};
+    use crate::{fold::{EdgeAssignment, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit}};
     use crate::fold::{Vertex as V, Edge as E, HalfEdge as H, Face as F, FaceCorner as C};
 
     #[test]
@@ -598,14 +598,14 @@ mod test {
             180.0,
         ]));
         assert_eq!(fold.key_frame().edges_fold_angle_exact, Some(ti_vec![
-            ExactAngle::new( 0, Some(based_expr!(0))),
-            ExactAngle::new( 0, Some(based_expr!(0))),
-            ExactAngle::new( 0, Some(based_expr!(0))),
-            ExactAngle::new( 0, Some(based_expr!(0))),
-            ExactAngle::new(-1, Some(based_expr!(0))),
-            ExactAngle::new(-1, Some(based_expr!(0))),
-            ExactAngle::new(-1, Some(based_expr!(0))),
-            ExactAngle::new( 1, Some(based_expr!(0))),
+            Angle::new( 0, Some(based_expr!(0))),
+            Angle::new( 0, Some(based_expr!(0))),
+            Angle::new( 0, Some(based_expr!(0))),
+            Angle::new( 0, Some(based_expr!(0))),
+            Angle::new(-1, Some(based_expr!(0))),
+            Angle::new(-1, Some(based_expr!(0))),
+            Angle::new(-1, Some(based_expr!(0))),
+            Angle::new( 1, Some(based_expr!(0))),
         ]));
         assert_eq!(fold.key_frame().edges_length_f64, Some(ti_vec![
             200.0,
@@ -894,14 +894,14 @@ mod test {
                         180.0,
                     ]),
                     edges_fold_angle_exact: Some(ti_vec![
-                        ExactAngle::new( 0, Some(based_expr!(0))),
-                        ExactAngle::new( 0, Some(based_expr!(0))),
-                        ExactAngle::new( 0, Some(based_expr!(0))),
-                        ExactAngle::new( 0, Some(based_expr!(0))),
-                        ExactAngle::new(-1, Some(based_expr!(0))),
-                        ExactAngle::new(-1, Some(based_expr!(0))),
-                        ExactAngle::new(-1, Some(based_expr!(0))),
-                        ExactAngle::new( 1, Some(based_expr!(0))),
+                        Angle::new( 0, Some(based_expr!(0))),
+                        Angle::new( 0, Some(based_expr!(0))),
+                        Angle::new( 0, Some(based_expr!(0))),
+                        Angle::new( 0, Some(based_expr!(0))),
+                        Angle::new(-1, Some(based_expr!(0))),
+                        Angle::new(-1, Some(based_expr!(0))),
+                        Angle::new(-1, Some(based_expr!(0))),
+                        Angle::new( 1, Some(based_expr!(0))),
                     ]),
                     edges_length_f64: Some(ti_vec![
                         200.0,

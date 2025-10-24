@@ -1,6 +1,6 @@
 use std::{fmt::{Debug, Display}, fs::File, io::BufReader, ops::Index, path::Path};
 use derive_more::{Add, AddAssign, Div, DivAssign, From, Into, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
-use exact_number::{basis::ArcBasis, BasedExpr};
+use exact_number::{basis::ArcBasis, BasedExpr, Angle};
 use getset::{CopyGetters, Getters};
 use indexmap::{IndexMap, IndexSet};
 use nalgebra::{DVector, DMatrix};
@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use typed_index_collections::{TiSlice, TiVec};
-
-use crate::geom::ExactAngle;
 
 /// A subjective interpretation about what the entire file represents.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -607,7 +605,7 @@ pub struct EdgeData {
     pub face_corners: Option<[Vec<FaceCorner>; 2]>,
     pub assignment: Option<EdgeAssignment>,
     pub fold_angle_f64: Option<f64>,
-    pub fold_angle_exact: Option<ExactAngle>,
+    pub fold_angle_exact: Option<Angle>,
     pub length_f64: Option<f64>,
     pub length2_exact: Option<BasedExpr>,
     pub custom: IndexMap<String, Value>,
@@ -777,7 +775,7 @@ pub struct Frame {
     /// 
     /// Note: this is *not* automatically updated when vertex coordinates or edge assignment are updated.
     #[getset(get = "pub")]
-    pub(crate) edges_fold_angle_exact: Option<TiVec<Edge, ExactAngle>>,
+    pub(crate) edges_fold_angle_exact: Option<TiVec<Edge, Angle>>,
 
     /// For each edge, the approximate length of the edge.
     /// This is mainly useful for defining the intrinsic geometry of

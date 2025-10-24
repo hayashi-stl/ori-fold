@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, iter::Sum, ops::{Mul, Sub, Neg}};
 
-use exact_number::{malachite::base::num::arithmetic::traits::{Sign, CheckedDiv}, rat::Rat, BasedExpr};
+use exact_number::{malachite::base::num::arithmetic::traits::{Sign, CheckedDiv}, rat::Rat, BasedExpr, Angle};
 use float_ord::FloatOrd;
 use nalgebra::{allocator::Allocator, matrix, vector, Affine2, ArrayStorage, ClosedSubAssign, Const, DefaultAllocator, DimNameAdd, DimNameSum, Dyn, MatrixView2xX, SVector, RealField, Scalar, TAffine, ToTypenum, Transform, Vector, Vector2, VectorView, VectorView2, U1};
 use num_traits::{Num, NumAssign, NumAssignRef, NumRef, RefNum, Signed, Zero};
@@ -11,54 +11,10 @@ pub type MatrixView2Dyn<'s, T> = MatrixView2xX<'s, T, U1, Dyn>;
 pub trait NumEx: Default + PartialOrd + Num + NumRef + NumAssignRef + Scalar + NumAssign + Signed + Neg<Output = Self> {}
 impl<T> NumEx for T where T: Default + PartialOrd + Num + NumRef + NumAssignRef + Scalar + NumAssign + Signed + Neg<Output = Self> {}
 
-/// A fold angle represented exactly
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ExactAngle {
-    /// Specifically, ⌊angle/π + 1/2⌋ - 1/2
-    turn_value: i32,
-    tan: Option<BasedExpr>
-}
-
-impl ExactAngle {
-    pub const PI: ExactAngle = ExactAngle::new(1, Some(BasedExpr::BASELESS_ZERO));
-    pub const ZERO: ExactAngle = ExactAngle::new(0, Some(BasedExpr::BASELESS_ZERO));
-    pub const NEG_PI: ExactAngle = ExactAngle::new(-1, Some(BasedExpr::BASELESS_ZERO));
-
-    /// The `turn value` is ⌊angle/π + 1/2⌋ - 1/2.
-    /// The `tan` is the tangent of the angle, or `None` if the tangent is undefined.
-    pub const fn new(turn_value: i32, tan: Option<BasedExpr>) -> Self {
-        Self { turn_value, tan }
-    }
-
-    pub fn atan2(y: BasedExpr, x: BasedExpr) -> Self {
-        let x_sign = x.cmp_zero();
-        let y_sign = y.cmp_zero();
-        let turn_value = if x_sign.is_lt() && y_sign.is_le() {
-            -1
-        } else if x_sign.is_gt() || y_sign.is_le() {
-            0
-        } else {
-            1
-        };
-        let tan = if x_sign.is_eq() && y_sign.is_eq() { Some(x.into_zero()) } else { y.checked_div(x) };
-        Self::new(turn_value, tan)
-    }
-
-    pub fn tan(&self) -> Option<BasedExpr> {
-        self.tan.clone()
-    }
-}
-
-impl From<ExactAngle> for (i32, Option<BasedExpr>) {
-    fn from(value: ExactAngle) -> Self {
-        (value.turn_value, value.tan)
-    }
-}
-
 ///// An angle, either exact or approximate
 //#[derive(Clone, Debug, PartialEq, PartialOrd)]
 //pub enum AngleRef {
-//    Exact(ExactAngle),
+//    Exact(Angle),
 //    Approx(f64)
 //}
 
@@ -99,12 +55,12 @@ impl AngleRep for Vector2<f64> {
 }
 
 impl AngleRep for Vector2<BasedExpr> {
-    type Output = ExactAngle;
+    type Output = Angle;
 
     /// The `[-1, 0]` direction returns the minimum value for representation convience.
     fn angle_rep(self) -> Self::Output {
         let [[x, y]] = self.data.0;
-        ExactAngle::atan2(y, x)
+        Angle::atan2(y, x)
         //let x = &self.x;
         //let y = &self.y;
         //if x.is_zero() && y.is_zero() { return x.clone() }
@@ -266,7 +222,7 @@ mod test {
     use exact_number::based_expr;
     use nalgebra::{matrix, vector, Affine2, ClosedSubAssign, Matrix2xX, Scalar, Vector2};
 
-    use crate::geom::{polygon_orientation, reflect_line, reflect_line_matrix, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix, twice_signed_area, AngleRep, ExactAngle, VectorView2Dyn};
+    use crate::geom::{polygon_orientation, reflect_line, reflect_line_matrix, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix, twice_signed_area, AngleRep, Angle, VectorView2Dyn};
 
     macro_rules! assert_lt {
         ($left:expr, $right:expr) => {
@@ -282,11 +238,11 @@ mod test {
 
     #[test]
     fn test_angle_rep() {
-        assert_eq!(vector![based_expr!(0), based_expr!(0)].angle_rep(), ExactAngle::new(0, Some(based_expr!(0))));
-        assert_eq!(vector![based_expr!(0 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2)].angle_rep(), ExactAngle::new(0, Some(based_expr!(0 + 0 sqrt 2)))); // basis check
-        assert_eq!(vector![based_expr!(1), based_expr!(0)].angle_rep(), ExactAngle::new(0, Some(based_expr!(0))));
-        assert_eq!(vector![based_expr!(1/16), based_expr!(0)].angle_rep(), ExactAngle::new(0, Some(based_expr!(0))));
-        assert_eq!(vector![based_expr!(50), based_expr!(0)].angle_rep(), ExactAngle::new(0, Some(based_expr!(0))));
+        assert_eq!(vector![based_expr!(0), based_expr!(0)].angle_rep(), Angle::new(0, Some(based_expr!(0))));
+        assert_eq!(vector![based_expr!(0 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2)].angle_rep(), Angle::new(0, Some(based_expr!(0 + 0 sqrt 2)))); // basis check
+        assert_eq!(vector![based_expr!(1), based_expr!(0)].angle_rep(), Angle::new(0, Some(based_expr!(0))));
+        assert_eq!(vector![based_expr!(1/16), based_expr!(0)].angle_rep(), Angle::new(0, Some(based_expr!(0))));
+        assert_eq!(vector![based_expr!(50), based_expr!(0)].angle_rep(), Angle::new(0, Some(based_expr!(0))));
 
         assert_eq!(vector![based_expr!(13), based_expr!(-25)].angle_rep(), vector!(based_expr!(26), based_expr!(-50)).angle_rep());
 

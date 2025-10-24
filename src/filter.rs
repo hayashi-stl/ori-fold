@@ -612,13 +612,13 @@ pub fn other_vertex(edge: [Vertex; 2], vertex: Vertex) -> Vertex {
 mod test {
     use core::f64;
 
-    use exact_number::based_expr;
+    use exact_number::{based_expr, Angle};
     use indexmap::{indexmap, indexset, IndexMap};
     use nalgebra::{vector, DMatrix, DVector};
     use serde_json::json;
     use typed_index_collections::ti_vec;
 
-    use crate::{filter::{edges_vertices_incident, other_vertex}, fold::{EdgeAssignment, EdgeData, EdgeOrder, FaceData, FaceOrder, Frame, FrameAttribute, VertexData}, geom::ExactAngle};
+    use crate::{filter::{edges_vertices_incident, other_vertex}, fold::{EdgeAssignment, EdgeData, EdgeOrder, FaceData, FaceOrder, Frame, FrameAttribute, VertexData}};
     use crate::fold::{Vertex as V, Edge as E, Face as F, HalfEdge as H, FaceCorner as C};
 
     #[test]
@@ -684,7 +684,7 @@ mod test {
             num_vertices: 3,
             edges_assignment: Some(ti_vec![Boundary, Boundary]),
             edges_fold_angle_f64: Some(ti_vec![0.0, 0.0]),
-            edges_fold_angle_exact: Some(ti_vec![ExactAngle::ZERO, ExactAngle::ZERO]),
+            edges_fold_angle_exact: Some(ti_vec![Angle::ZERO, Angle::ZERO]),
             edges_length_f64: Some(ti_vec![2.0, 2.5]),
             edges_length2_exact: Some(ti_vec![based_expr!(4), based_expr!(25/4)]),
             edges_custom: indexmap! {
@@ -701,7 +701,7 @@ mod test {
             face_corners: None,
             assignment: Some(EdgeAssignment::Unassigned),
             fold_angle_f64: Some(0.0),
-            fold_angle_exact: Some(ExactAngle::ZERO),
+            fold_angle_exact: Some(Angle::ZERO),
             length_f64: Some(1.0),
             length2_exact: Some(based_expr!(1)),
             custom: indexmap! { "test:test".to_owned() => json!(3) },
@@ -721,7 +721,7 @@ mod test {
         assert_eq!(frame.edges_face_corners, None);
         assert_eq!(frame.edges_assignment, Some(ti_vec![Boundary, Boundary, Unassigned]));
         assert_eq!(frame.edges_fold_angle_f64, Some(ti_vec![0.0, 0.0, 0.0]));
-        assert_eq!(frame.edges_fold_angle_exact, Some(ti_vec![ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO]));
+        assert_eq!(frame.edges_fold_angle_exact, Some(ti_vec![Angle::ZERO, Angle::ZERO, Angle::ZERO]));
         assert_eq!(frame.edges_length_f64, Some(ti_vec![2.0, 2.5, 1.0]));
         assert_eq!(frame.edges_length2_exact, Some(ti_vec![based_expr!(4), based_expr!(25/4), based_expr!(1)]));
         assert_eq!(frame.edges_custom, indexmap! {
@@ -987,7 +987,7 @@ mod test {
             edges_assignment: Some(ti_vec![Boundary, Valley, Boundary, Boundary, Boundary, Boundary, Boundary]),
             edges_fold_angle_f64: Some(ti_vec![0.0, -180.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             edges_fold_angle_exact: Some(ti_vec![
-                ExactAngle::ZERO, ExactAngle::NEG_PI, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO,
+                Angle::ZERO, -Angle::DEG_180, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO,
             ]),
             edges_length_f64: Some(ti_vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]),
             edges_length2_exact: Some(ti_vec![
@@ -1022,7 +1022,7 @@ mod test {
             face_corners: Some([vec![], vec![]]),
             assignment: Some(EdgeAssignment::Boundary),
             fold_angle_f64: Some(0.0),
-            fold_angle_exact: Some(ExactAngle::ZERO),
+            fold_angle_exact: Some(Angle::ZERO),
             length_f64: Some(1.0),
             length2_exact: Some(based_expr!(1)),
             custom: indexmap! { "test:test".to_owned() => json!(1) }
@@ -1063,7 +1063,7 @@ mod test {
         assert_eq!(frame.edges_assignment, Some(ti_vec![Valley, Boundary, Boundary, Boundary, Boundary, Boundary]));
         assert_eq!(frame.edges_fold_angle_f64, Some(ti_vec![-180.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
         assert_eq!(frame.edges_fold_angle_exact, Some(ti_vec![
-            ExactAngle::NEG_PI, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO,
+            -Angle::DEG_180, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO,
         ]));
         assert_eq!(frame.edges_length_f64, Some(ti_vec![1.0, 1.0, 2.0, 2.0, 2.0, 2.0]));
         assert_eq!(frame.edges_length2_exact, Some(ti_vec![
@@ -1085,7 +1085,7 @@ mod test {
             face_corners: Some([vec![], vec![]]),
             assignment: Some(EdgeAssignment::Valley),
             fold_angle_f64: Some(-180.0),
-            fold_angle_exact: Some(ExactAngle::NEG_PI),
+            fold_angle_exact: Some(-Angle::DEG_180),
             length_f64: Some(1.0),
             length2_exact: Some(based_expr!(1)),
             custom: indexmap! { "test:test".to_owned() => json!(2) }
@@ -1128,7 +1128,7 @@ mod test {
         assert_eq!(frame.edges_assignment, Some(ti_vec![Boundary, Boundary, Boundary, Boundary, Boundary, Boundary]));
         assert_eq!(frame.edges_fold_angle_f64, Some(ti_vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
         assert_eq!(frame.edges_fold_angle_exact, Some(ti_vec![
-            ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO
+            Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO
         ]));
         assert_eq!(frame.edges_length_f64, Some(ti_vec![1.0, 1.0, 2.0, 2.0, 2.0, 2.0]));
         assert_eq!(frame.edges_length2_exact, Some(ti_vec![
@@ -1229,7 +1229,7 @@ mod test {
             edges_assignment: Some(ti_vec![Boundary, Valley, Boundary, Boundary, Boundary, Boundary, Boundary]),
             edges_fold_angle_f64: Some(ti_vec![0.0, -180.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
             edges_fold_angle_exact: Some(ti_vec![
-                ExactAngle::ZERO, ExactAngle::NEG_PI, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO,
+                Angle::ZERO, -Angle::DEG_180, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO,
             ]),
             edges_length_f64: Some(ti_vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]),
             edges_length2_exact: Some(ti_vec![
@@ -1264,7 +1264,7 @@ mod test {
             face_corners: Some([vec![], vec![]]),
             assignment: Some(EdgeAssignment::Boundary),
             fold_angle_f64: Some(0.0),
-            fold_angle_exact: Some(ExactAngle::ZERO),
+            fold_angle_exact: Some(Angle::ZERO),
             length_f64: Some(1.0),
             length2_exact: Some(based_expr!(1)),
             custom: indexmap! { "test:test".to_owned() => json!(1) }
@@ -1305,7 +1305,7 @@ mod test {
         assert_eq!(frame.edges_assignment, Some(ti_vec![Boundary, Valley, Boundary, Boundary, Boundary, Boundary]));
         assert_eq!(frame.edges_fold_angle_f64, Some(ti_vec![0.0, -180.0, 0.0, 0.0, 0.0, 0.0]));
         assert_eq!(frame.edges_fold_angle_exact, Some(ti_vec![
-            ExactAngle::ZERO, ExactAngle::NEG_PI, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO
+            Angle::ZERO, -Angle::DEG_180, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO
         ]));
         assert_eq!(frame.edges_length_f64, Some(ti_vec![2.0, 1.0, 1.0, 2.0, 2.0, 2.0]));
         assert_eq!(frame.edges_length2_exact, Some(ti_vec![
@@ -1327,7 +1327,7 @@ mod test {
             face_corners: Some([vec![], vec![]]),
             assignment: Some(EdgeAssignment::Valley),
             fold_angle_f64: Some(-180.0),
-            fold_angle_exact: Some(ExactAngle::NEG_PI),
+            fold_angle_exact: Some(-Angle::DEG_180),
             length_f64: Some(1.0),
             length2_exact: Some(based_expr!(1)),
             custom: indexmap! { "test:test".to_owned() => json!(2) }
@@ -1370,7 +1370,7 @@ mod test {
         assert_eq!(frame.edges_assignment, Some(ti_vec![Boundary, Boundary, Boundary, Boundary, Boundary, Boundary]));
         assert_eq!(frame.edges_fold_angle_f64, Some(ti_vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
         assert_eq!(frame.edges_fold_angle_exact, Some(ti_vec![
-            ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO, ExactAngle::ZERO
+            Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO, Angle::ZERO
         ]));
         assert_eq!(frame.edges_length_f64, Some(ti_vec![1.0, 2.0, 1.0, 2.0, 2.0, 2.0]));
         assert_eq!(frame.edges_length2_exact, Some(ti_vec![

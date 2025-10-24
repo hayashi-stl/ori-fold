@@ -22,7 +22,10 @@ pub mod basis;
 pub mod math;
 pub mod conversion;
 mod parse;
+pub mod angle;
 //mod matrix;
+
+pub use angle::Angle;
 
 #[macro_export]
 macro_rules! sqrt_expr_helper {

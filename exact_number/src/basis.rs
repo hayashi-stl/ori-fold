@@ -122,13 +122,6 @@ impl Basis {
                 }
             }
         }
-        //for (i, row) in result.iter().enumerate() {
-        //    println!("{}: [", i);
-        //    for entry in row.iter() {
-        //        println!("    ({}, {}, {})", entry.0, entry.1, entry.2);
-        //    }
-        //    println!("]");
-        //}
         Ok(result)
     }
 
@@ -326,3 +319,27 @@ impl Drop for ArcBasis {
         }
     }
 }
+
+//#[cfg(test)]
+//mod test {
+//    use crate::{basis::Basis, sqrt_expr};
+//
+//    #[test]
+//    fn test_panic() {
+//        let basis = Basis::new_arc(vec![
+//            sqrt_expr!(1),
+//            sqrt_expr!(2),
+//            sqrt_expr!(3),
+//            sqrt_expr!(6)
+//        ]);
+//
+//        for (i, row) in basis.matrices.iter().enumerate() {
+//            println!("{}: [", i);
+//            for entry in row.iter() {
+//                println!("    ({}, {}, {})", entry.0, entry.1, entry.2);
+//            }
+//            println!("]");
+//        }
+//        panic!("Aah, a multiplication result!");
+//    }
+//}

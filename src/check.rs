@@ -3,11 +3,11 @@
 
 use std::fmt::Display;
 
-use exact_number::BasedExpr;
+use exact_number::{BasedExpr, Angle};
 use nalgebra::{DMatrix, DMatrixView, DVector};
 use typed_index_collections::TiSlice;
 
-use crate::{geom::ExactAngle, fold::{Edge, EdgeAssignment, Fold, Frame, FrameAttribute}, manifold::{ManifoldError, OrientableError}};
+use crate::{fold::{Edge, EdgeAssignment, Fold, Frame, FrameAttribute}, manifold::{ManifoldError, OrientableError}};
 
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq, Eq, PartialOrd, Ord))] // Really no point in this derivation outside of tests
@@ -18,7 +18,7 @@ pub enum CheckError {
     NotAManifold(ManifoldError),
     NotOrientable(OrientableError),
     InvalidEdgeAssignment{ attribute: FrameAttribute, edge: Edge, assignment: EdgeAssignment },
-    ExactFoldAngleIsNotNormalized{ edge: Edge, angle: ExactAngle },
+    ExactFoldAngleIsNotNormalized{ edge: Edge, angle: Angle },
 }
 
 impl Display for CheckError {
