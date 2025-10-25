@@ -1,8 +1,8 @@
-use std::{cmp::Ordering, iter::Sum, ops::{Mul, Sub, Neg}};
+use std::{cmp::Ordering, iter::Sum, mem, ops::{Mul, Neg, Sub}};
 
 use exact_number::{malachite::base::num::arithmetic::traits::{Sign, CheckedDiv}, rat::Rat, BasedExpr, Angle};
 use float_ord::FloatOrd;
-use nalgebra::{allocator::Allocator, matrix, vector, Affine2, ArrayStorage, ClosedSubAssign, Const, DefaultAllocator, DimNameAdd, DimNameSum, Dyn, MatrixView2xX, SVector, RealField, Scalar, TAffine, ToTypenum, Transform, Vector, Vector2, VectorView, VectorView2, U1};
+use nalgebra::{allocator::Allocator, matrix, vector, Affine2, ArrayStorage, ClosedSubAssign, ComplexField, Const, DefaultAllocator, DimNameAdd, DimNameSum, Dyn, Matrix2, MatrixView2xX, RealField, SVector, Scalar, TAffine, ToTypenum, Transform, Vector, Vector2, VectorView, VectorView2, U1};
 use num_traits::{Num, NumAssign, NumAssignRef, NumRef, RefNum, Signed, Zero};
 
 pub type VectorView2Dyn<'s, T> = VectorView2<'s, T, U1, Dyn>;
@@ -215,6 +215,62 @@ pub fn transform<T, const D: usize>(transform: &Transform<T, TAffine, D>, p: Vec
     transform.matrix().fixed_view::<D, D>(0, 0) * p + transform.matrix().fixed_view::<D, 1>(0, D)
 }
 
+/// Gets the parameters t1 and t2 for the intersection
+/// of two parameterized lines specified by t=0 and t=1 points
+/// Returns `None` if the lines are parallel
+/// 
+/// Warning: this does not use epsilon comparison. Not relevant for exact coordinates,
+/// but be careful when using floating-point numbers
+pub fn parametric_line_intersect<T: NumEx + RealField>
+    (line_a: [VectorView2Dyn<T>; 2], line_b: [VectorView2Dyn<T>; 2]) -> Option<Vector2<T>>
+{
+    let vec_a = &line_a[1] - &line_a[0];
+    let vec_b = &line_b[1] - &line_b[0];
+    let start_diff = &line_b[0] - &line_a[0];
+    let mtx = Matrix2::from_columns(&[vec_a, -vec_b]);
+    mtx.try_inverse().map(|inv| inv * start_diff)
+}
+
+/// The result of intersecting two segments
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SegmentIntersection<T> {
+    /// The segments don't intersect
+    None,
+    /// An intersection between non-parallel segments
+    Intersection(Vector2<T>),
+    /// A shared section between two collinear segments.
+    /// The order of the points is the order within the first segment.
+    Collinear([Vector2<T>; 2]),
+}
+
+/// Gets the intersection between two segments `seg_a` and `seg_b`. Note that boundary points are included.
+/// 
+/// Warning: this does not use epsilon comparison. Not relevant for exact coordinates,
+/// but be careful when using floating-point numbers
+pub fn segment_intersect<T: NumEx + RealField>(seg_a: [VectorView2Dyn<T>; 2], seg_b: [VectorView2Dyn<T>; 2]) -> SegmentIntersection<T> {
+    if let Some(mut t) = parametric_line_intersect(seg_a.clone(), seg_b.clone()) {
+        if t.x >= T::zero() && t.x <= T::one() && t.y >= T::zero() && t.y <= T::one() {
+            SegmentIntersection::Intersection((&seg_a[1] - &seg_a[0]) * mem::take(&mut t.x) + &seg_a[0])
+        } else {
+            SegmentIntersection::None
+        }
+    } else {
+        let mut vec_a = &seg_a[1] - &seg_a[0];
+        if vec_a == Vector2::zeros() { vec_a.x = T::one(); }
+        let len2 = vec_a.dot(&vec_a);
+        let mut t0 = (&seg_b[0] - &seg_a[0]).dot(&vec_a) / &len2;
+        let mut t1 = (&seg_b[1] - &seg_a[0]).dot(&vec_a) / &len2;
+        if t0 > t1 { mem::swap(&mut t0, &mut t1) }
+        t0 = t0.max(T::zero());
+        t1 = t1.min(T::one());
+        if t0 <= t1 {
+            SegmentIntersection::Collinear([&vec_a * t0 + &seg_a[0], &vec_a * t1 + &seg_a[0]])
+        } else {
+            SegmentIntersection::None
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::fmt::Debug;
@@ -222,7 +278,7 @@ mod test {
     use exact_number::based_expr;
     use nalgebra::{matrix, vector, Affine2, ClosedSubAssign, Matrix2xX, Scalar, Vector2};
 
-    use crate::geom::{polygon_orientation, reflect_line, reflect_line_matrix, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix, twice_signed_area, AngleRep, Angle, VectorView2Dyn};
+    use crate::geom::{polygon_orientation, reflect_line, reflect_line_matrix, segment_intersect, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix, twice_signed_area, Angle, AngleRep, SegmentIntersection, VectorView2Dyn};
 
     macro_rules! assert_lt {
         ($left:expr, $right:expr) => {
@@ -481,5 +537,98 @@ mod test {
             based_expr!(4/5), based_expr!(-3/5), based_expr!(0);
             based_expr!(0),   based_expr!(0),    based_expr!(1);
         ]));
+    }
+
+    macro_rules! exact_vec_2 {
+        (($($a:tt)*), ($($b:tt)*)$(,)?) => {
+            nalgebra::vector![exact_number::based_expr!($($a)*), exact_number::based_expr!($($b)*)]
+        };
+    }
+
+    macro_rules! exact_view_2 {
+        (($($a:tt)*), ($($b:tt)*)$(,)?) => {
+            nalgebra::vector![exact_number::based_expr!($($a)*), exact_number::based_expr!($($b)*)].as_view()
+        };
+    }
+
+    #[test]
+    fn test_segment_intersect() {
+        // t extremes
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (0)], exact_view_2![(1), (0)]], [exact_view_2![(0), (0)], exact_view_2![(0), (1)]]
+        ), SegmentIntersection::Intersection(exact_vec_2![(0), (0)]));
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (0)], exact_view_2![(1), (0)]], [exact_view_2![(1), (0)], exact_view_2![(1), (1)]]
+        ), SegmentIntersection::Intersection(exact_vec_2![(1), (0)]));
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(1), (1)]], [exact_view_2![(0), (0)], exact_view_2![(0), (1)]]
+        ), SegmentIntersection::Intersection(exact_vec_2![(0), (1)]));
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(1), (1)]], [exact_view_2![(1), (0)], exact_view_2![(1), (1)]]
+        ), SegmentIntersection::Intersection(exact_vec_2![(1), (1)]));
+
+        // Some "normal" intersections
+        assert_eq!(segment_intersect(
+            [exact_view_2![(1), (1)], exact_view_2![(2), (2)]], [exact_view_2![(1), (2)], exact_view_2![(2), (1)]]
+        ), SegmentIntersection::Intersection(exact_vec_2![(3/2), (3/2)]));
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (0)], exact_view_2![(1), (1)]], [exact_view_2![(0), (1/2)], exact_view_2![(1), (0)]]
+        ), SegmentIntersection::Intersection(exact_vec_2![(1/3), (1/3)]));
+
+        // out of bounds, so no intersection
+        assert_eq!(segment_intersect(
+            [exact_view_2![(1), (0)], exact_view_2![(2), (0)]], [exact_view_2![(0), (-1)], exact_view_2![(0), (1)]]
+        ), SegmentIntersection::None);
+        assert_eq!(segment_intersect(
+            [exact_view_2![(-2), (0)], exact_view_2![(-1), (0)]], [exact_view_2![(0), (-1)], exact_view_2![(0), (1)]]
+        ), SegmentIntersection::None);
+        assert_eq!(segment_intersect(
+            [exact_view_2![(-1), (0)], exact_view_2![(1), (0)]], [exact_view_2![(0), (1)], exact_view_2![(0), (2)]]
+        ), SegmentIntersection::None);
+        assert_eq!(segment_intersect(
+            [exact_view_2![(-1), (0)], exact_view_2![(1), (0)]], [exact_view_2![(0), (-2)], exact_view_2![(0), (-1)]]
+        ), SegmentIntersection::None);
+        
+        // parallell lines
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(1), (2)]], [exact_view_2![(2), (4)], exact_view_2![(4), (6)]]
+        ), SegmentIntersection::None);
+
+        // collinear lines that don't intersect
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(1), (2)]], [exact_view_2![(2), (3)], exact_view_2![(3), (4)]]
+        ), SegmentIntersection::None);
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(1), (2)]], [exact_view_2![(3), (4)], exact_view_2![(2), (3)]]
+        ), SegmentIntersection::None);
+        assert_eq!(segment_intersect(
+            [exact_view_2![(1), (2)], exact_view_2![(0), (1)]], [exact_view_2![(2), (3)], exact_view_2![(3), (4)]]
+        ), SegmentIntersection::None);
+        assert_eq!(segment_intersect(
+            [exact_view_2![(1), (2)], exact_view_2![(0), (1)]], [exact_view_2![(3), (4)], exact_view_2![(2), (3)]]
+        ), SegmentIntersection::None);
+
+        // collinear lines that intersect
+        // one segment is properly inside the other
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(3), (4)]], [exact_view_2![(1), (2)], exact_view_2![(2), (3)]]
+        ), SegmentIntersection::Collinear([exact_vec_2![(1), (2)], exact_vec_2![(2), (3)]]));
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(3), (4)]], [exact_view_2![(2), (3)], exact_view_2![(1), (2)]]
+        ), SegmentIntersection::Collinear([exact_vec_2![(1), (2)], exact_vec_2![(2), (3)]]));
+        assert_eq!(segment_intersect(
+            [exact_view_2![(3), (4)], exact_view_2![(0), (1)]], [exact_view_2![(1), (2)], exact_view_2![(2), (3)]]
+        ), SegmentIntersection::Collinear([exact_vec_2![(2), (3)], exact_vec_2![(1), (2)]]));
+        assert_eq!(segment_intersect(
+            [exact_view_2![(3), (4)], exact_view_2![(0), (1)]], [exact_view_2![(2), (3)], exact_view_2![(1), (2)]]
+        ), SegmentIntersection::Collinear([exact_vec_2![(2), (3)], exact_vec_2![(1), (2)]]));
+        // no segment contains the other
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(2), (3)]], [exact_view_2![(1), (2)], exact_view_2![(3), (4)]]
+        ), SegmentIntersection::Collinear([exact_vec_2![(1), (2)], exact_vec_2![(2), (3)]]));
+        // the segments intersect at a point
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(2), (3)]], [exact_view_2![(2), (3)], exact_view_2![(3), (4)]]
+        ), SegmentIntersection::Collinear([exact_vec_2![(2), (3)], exact_vec_2![(2), (3)]]));
     }
 }

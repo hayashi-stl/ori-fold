@@ -573,9 +573,51 @@ pub struct VertexData {
     pub custom: IndexMap<String, Value>,
 }
 
+/// Vertex data for multiple vertices. All data is documented in [`Frame`](crate::Frame)
+#[derive(Clone, Debug, PartialEq)]
+pub struct VertexDatas {
+    /// Needed in case all fields are undefined
+    pub num_vertices: Option<usize>,
+    pub coords_f64: Option<DMatrix<f64>>,
+    pub coords_exact: Option<DMatrix<BasedExpr>>,
+    pub half_edges: Option<Vec<Vec<HalfEdge>>>,
+    pub custom: IndexMap<String, Vec<Value>>,
+}
+
+impl VertexDatas {
+    /// Gets the number of elements whose data is stored.
+    /// 
+    /// # Panics
+    /// Panics if there's disagreement.
+    pub fn len(&self) -> usize {
+        let counts = vec![
+            self.num_vertices,
+            self.coords_f64  .as_ref().map(|v| v.len()),
+            self.coords_exact.as_ref().map(|v| v.len()),
+            self.half_edges  .as_ref().map(|v| v.len()),
+        ].into_iter().flatten().chain(
+            self.custom.iter().map(|(_, v)| v.len())
+        );
+        counts.reduce(|curr, acc| if curr == acc { curr } else { panic!("disagreement over number of vertices in VertexDatas") })
+            .expect("if no fields are defined, at least specify `num_vertices`")
+    }
+}
+
 impl Default for VertexData {
     fn default() -> Self {
         Self {
+            coords_f64: Default::default(),
+            coords_exact: Default::default(),
+            half_edges: Default::default(),
+            custom: Default::default(),
+        }
+    }
+}
+
+impl Default for VertexDatas {
+    fn default() -> Self {
+        Self {
+            num_vertices: Default::default(),
             coords_f64: Default::default(),
             coords_exact: Default::default(),
             half_edges: Default::default(),
@@ -611,6 +653,19 @@ pub struct EdgeData {
     pub custom: IndexMap<String, Value>,
 }
 
+/// Edge data for multiple edges. All data is documented in [`Frame`](crate::Frame)
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeDatas {
+    pub vertices: Vec<[Vertex; 2]>,
+    pub face_corners: Option<Vec<[Vec<FaceCorner>; 2]>>,
+    pub assignment: Option<Vec<EdgeAssignment>>,
+    pub fold_angle_f64: Option<Vec<f64>>,
+    pub fold_angle_exact: Option<Vec<Angle>>,
+    pub length_f64: Option<Vec<f64>>,
+    pub length2_exact: Option<Vec<BasedExpr>>,
+    pub custom: IndexMap<String, Vec<Value>>,
+}
+
 impl EdgeData {
     /// `vertices` has no meaningful default,
     /// so just deal with this method
@@ -628,6 +683,42 @@ impl EdgeData {
     }
 }
 
+impl EdgeDatas {
+    /// `vertices` has no meaningful default,
+    /// so just deal with this method
+    pub fn default_with_vertices(vertices: Vec<[Vertex; 2]>) -> Self {
+        Self {
+            vertices,
+            face_corners: Default::default(),
+            assignment: Default::default(),
+            fold_angle_f64: Default::default(),
+            fold_angle_exact: Default::default(),
+            length_f64: Default::default(),
+            length2_exact: Default::default(),
+            custom: Default::default(),
+        }
+    }
+    
+    /// Gets the number of elements whose data is stored.
+    /// 
+    /// # Panics
+    /// Panics if there's disagreement.
+    pub fn len(&self) -> usize {
+        let counts = vec![
+            Some(self.vertices.len()),
+            self.face_corners    .as_ref().map(|v| v.len()),
+            self.assignment      .as_ref().map(|v| v.len()),
+            self.fold_angle_f64  .as_ref().map(|v| v.len()),
+            self.fold_angle_exact.as_ref().map(|v| v.len()),
+            self.length_f64      .as_ref().map(|v| v.len()),
+            self.length2_exact   .as_ref().map(|v| v.len()),
+        ].into_iter().flatten().chain(
+            self.custom.iter().map(|(_, v)| v.len())
+        );
+        counts.reduce(|curr, acc| if curr == acc { curr } else { panic!("disagreement over number of edges in EdgeDatas") }).unwrap()
+    }
+}
+
 /// A type of face data
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum FaceField {
@@ -642,6 +733,13 @@ pub struct FaceData {
     pub custom: IndexMap<String, Value>,
 }
 
+/// Face data for multiple faces. All data is documented in [`Frame`](crate::Frame)
+#[derive(Clone, Debug, PartialEq)]
+pub struct FaceDatas {
+    pub half_edges: Vec<Vec<HalfEdge>>,
+    pub custom: IndexMap<String, Vec<Value>>,
+}
+
 impl FaceData {
     /// `half_edges` has no meaningful default,
     /// so just deal with this method
@@ -650,6 +748,30 @@ impl FaceData {
             half_edges,
             custom: Default::default(),
         }
+    }
+}
+
+impl FaceDatas {
+    /// `half_edges` has no meaningful default,
+    /// so just deal with this method
+    pub fn default_with_half_edges(half_edges: Vec<Vec<HalfEdge>>) -> Self {
+        Self {
+            half_edges,
+            custom: Default::default(),
+        }
+    }
+
+    /// Gets the number of elements whose data is stored.
+    /// 
+    /// # Panics
+    /// Panics if there's disagreement.
+    pub fn len(&self) -> usize {
+        let counts = vec![
+            Some(self.half_edges.len()),
+        ].into_iter().flatten().chain(
+            self.custom.iter().map(|(_, v)| v.len())
+        );
+        counts.reduce(|curr, acc| if curr == acc { curr } else { panic!("disagreement over number of faces in FaceDatas") }).unwrap()
     }
 }
 

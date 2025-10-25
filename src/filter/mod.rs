@@ -1,12 +1,14 @@
-use std::mem;
+use std::{iter, mem};
 
 use exact_number::BasedExpr;
 use indexmap::{indexmap, map::Entry, IndexMap, IndexSet};
-use nalgebra::{DMatrix, DVector, Scalar, U1};
+use nalgebra::{Const, DMatrix, DMatrixView, DMatrixViewMut, DVector, Dyn, RawStorageMut, Scalar, U1};
 use serde_json::Value;
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, FacesCustom, FacesHalfEdges, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField};
+use crate::{fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, FacesCustom, FacesHalfEdges, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, EdgeDatas, FaceDatas, VertexDatas};
+
+pub mod intersect;
 
 #[derive(Clone, Copy)]
 struct SwapRemove;
@@ -57,6 +59,46 @@ impl RemoveStrategy for ShiftRemove {
         let result = vec.column(column).into_owned();
         *vec = mem::take(vec).remove_column(column);
         result
+    }
+}
+
+pub trait Coordinate: Sized {
+    fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>>;
+    fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>>;
+}
+
+impl Coordinate for f64 {
+    fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_f64 }
+    fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_f64 }
+}
+
+impl Coordinate for BasedExpr {
+    fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_exact }
+    fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_exact }
+}
+
+fn insert_column<T: Scalar>(mtx: &mut DMatrix<T>, col: DVector<T>) {
+    let dims = col.nrows();
+    insert_columns(mtx, col.reshape_generic(Dyn(dims), Dyn(1)))
+}
+
+fn insert_columns<T: Scalar>(mtx: &mut DMatrix<T>, cols: DMatrix<T>) {
+    let index = mtx.ncols();
+    let len = cols.ncols();
+    let dims = cols.nrows();
+    if cols.nrows() != mtx.nrows() {
+        panic!("dimension mismatch: tried to insert {}D entries to a {}D vector array", cols.nrows(), mtx.nrows())
+    }
+    unsafe {
+        let mut uninit = mem::take(mtx).insert_columns_generic_uninitialized(index, Dyn(len));
+        let mut cols = cols.data.resize(len * dims).into_iter();
+        for c in 0..len {
+            for r in 0..dims {
+                uninit[(r, index + c)].write(cols.next().unwrap().assume_init());
+            }
+        }
+        // Safety: All new entries are now initialized
+        *mtx = uninit.assume_init();
     }
 }
 
@@ -152,16 +194,38 @@ impl Frame {
         self.num_vertices += 1;
 
         self.vertices_coords_f64.as_mut().map(|vec| {
-            *vec = mem::take(vec).insert_column(index.0, 0.0);
-            vec.set_column(index.0, &vertex_data.coords_f64.unwrap());
+            insert_column(vec,  vertex_data.coords_f64.take().unwrap());
         });
         self.vertices_coords_exact.as_mut().map(|vec| {
-            *vec = mem::take(vec).insert_column(index.0, BasedExpr::BASELESS_ZERO);
-            vec.set_column(index.0, &vertex_data.coords_exact.unwrap());
+            insert_column(vec,  vertex_data.coords_exact.take().unwrap());
         });
         self.vertices_half_edges.as_mut().map(|vec| vec.push(vec![]));
 
         self.vertices_custom.iter_mut().for_each(|(k, vec)| vec.push(vertex_data.custom.swap_remove(k).unwrap()));
+
+        index
+    }
+
+    /// Adds vertices given some vertex data and returns the index of the first new vertex.
+    /// 
+    /// All fields that exists in this frame must have their respective field specified
+    /// in `vertex_data`, and all fields must have the same number of elements.
+    /// 
+    /// Note that `vertex_data.half_edges` gets ignored.
+    pub fn add_vertices(&mut self, mut vertex_datas: VertexDatas) -> Vertex {
+        let index = Vertex(self.num_vertices);
+        let len = vertex_datas.len();
+        self.num_vertices += len;
+
+        self.vertices_coords_f64.as_mut().map(|vec| {
+            insert_columns(vec, vertex_datas.coords_f64.take().unwrap());
+        });
+        self.vertices_coords_exact.as_mut().map(|vec| {
+            insert_columns(vec, vertex_datas.coords_exact.take().unwrap());
+        });
+        self.vertices_half_edges.as_mut().map(|vec| vec.push(vec![]));
+
+        self.vertices_custom.iter_mut().for_each(|(k, vec)| vec.extend(vertex_datas.custom.swap_remove(k).unwrap()));
 
         index
     }
@@ -186,7 +250,7 @@ impl Frame {
 
     /// Adds an edge given some edge data and returns its index
     /// without checking whether it preserves the frame attributes.
-    /// See `Frame::try_add_edge` for further documentation.
+    /// See [`add_edge`](Frame::add_edge) for further documentation.
     pub fn add_edge_unchecked(&mut self, mut edge_data: EdgeData) -> Edge {
         let index = Edge(self.edges_vertices.as_ref().unwrap().len());
 
@@ -203,15 +267,39 @@ impl Frame {
         index
     }
 
+    /// Adds edges given some edge datas and returns the index of the first edge
+    /// without checking whether adding the edges preserves the frame attributes.
+    /// See [`add_edges`](Frame::add_edges) for further documentation.
+    pub fn add_edges_unchecked(&mut self, mut edge_datas: EdgeDatas) -> Edge {
+        let index = Edge(self.edges_vertices.as_ref().unwrap().len());
+        let len = edge_datas.len();
+
+        for (i, &[v0, v1]) in edge_datas.vertices.iter().enumerate() {
+            self.vertices_half_edges.as_mut().unwrap()[v0].push(HalfEdge::new(index + Edge(i), false));
+            self.vertices_half_edges.as_mut().unwrap()[v1].push(HalfEdge::new(index + Edge(i), true));
+        }
+        self.edges_vertices.as_mut().unwrap().extend(edge_datas.vertices);
+        self.edges_face_corners.as_mut().map(|vec| vec.extend(vec![[vec![], vec![]]; len]));
+        self.edges_assignment.as_mut().map(|vec| vec.extend(edge_datas.assignment.unwrap()));
+        self.edges_fold_angle_f64.as_mut().map(|vec| vec.extend(edge_datas.fold_angle_f64.unwrap()));
+        self.edges_fold_angle_exact.as_mut().map(|vec| vec.extend(edge_datas.fold_angle_exact.unwrap()));
+        self.edges_length_f64.as_mut().map(|vec| vec.extend(edge_datas.length_f64.unwrap()));
+        self.edges_length2_exact.as_mut().map(|vec| vec.extend(edge_datas.length2_exact.unwrap()));
+        self.edges_custom.iter_mut().for_each(|(k, vec)| vec.extend(edge_datas.custom.swap_remove(k).unwrap()));
+        index
+    }
+
     /// Adds an edge given some edge data and returns its index.
-    /// Modifies frame attributes as necessary to remove contradictions.
+    /// 
+    /// If the mesh is no longer a manifold, then [`Manifold`](FrameAttribute::Manifold) is cleared.
     /// 
     /// All fields that exists in this frame must have their respective field specified
     /// in `edge_data`
     /// 
     /// Note that `edge_data.face_corners` gets ignored.
     pub fn add_edge(&mut self, edge_data: EdgeData) -> Edge {
-        assert_ne!(edge_data.vertices[0], edge_data.vertices[1], "self-loops are not allowed");
+        let [v0, v1] = edge_data.vertices;
+        assert_ne!(v0, v1, "self-loops are not allowed, not even between {v0} and {v1}");
 
         if self.frame_attributes.contains(&FrameAttribute::NoCuts) && edge_data.assignment == Some(EdgeAssignment::Cut) {
             self.frame_attributes.swap_remove(&FrameAttribute::NoCuts);
@@ -231,6 +319,43 @@ impl Frame {
             }
         }
         self.add_edge_unchecked(edge_data)
+    }
+
+    /// Adds multiple edges given some edge data and returns the index of the first edge.
+    /// 
+    /// If the mesh is no longer a manifold, then [`Manifold`](FrameAttribute::Manifold) is cleared.
+    /// 
+    /// All fields that exists in this frame must have their respective field specified
+    /// in `edge_data`
+    /// 
+    /// Note that `edge_data.face_corners` gets ignored.
+    pub fn add_edges(&mut self, edge_datas: EdgeDatas) -> Edge {
+        for &[v0, v1] in &edge_datas.vertices {
+            assert_ne!(v0, v1, "self-loops are not allowed, not even between {v0} and {v1}");
+        }
+
+        if self.frame_attributes.contains(&FrameAttribute::NoCuts) &&
+            edge_datas.assignment.as_ref().map(|vec| vec.contains(&EdgeAssignment::Cut)).unwrap_or(false)
+        {
+            self.frame_attributes.swap_remove(&FrameAttribute::NoCuts);
+        }
+        if self.frame_attributes.contains(&FrameAttribute::NoJoins) &&
+            edge_datas.assignment.as_ref().map(|vec| vec.contains(&EdgeAssignment::Join)).unwrap_or(false)
+        {
+            self.frame_attributes.swap_remove(&FrameAttribute::NoJoins);
+        }
+        if self.frame_attributes.contains(&FrameAttribute::Manifold) {
+            let vh = self.vertices_half_edges.as_ref().unwrap();
+            let ec = self.edges_face_corners.as_ref().unwrap();
+            for &v in edge_datas.vertices.iter().flatten() {
+                if vh[v].iter().all(|&h| ec.at(h).len() + ec.at(h.flipped()).len() == 2) {
+                    self.frame_attributes.swap_remove(&FrameAttribute::Orientable);
+                    self.frame_attributes.swap_remove(&FrameAttribute::Manifold);
+                    break;
+                }
+            }
+        }
+        self.add_edges_unchecked(edge_datas)
     }
 
     /// Gets the data for an edge all in one place.
@@ -257,7 +382,7 @@ impl Frame {
 
     /// Adds a face given some face data and returns its index
     /// without checking whether it preserves the frame attributes.
-    /// See `Frame::add_face` for further documentation.
+    /// See [`add_face`](Frame::add_face) for further documentation.
     pub fn add_face_unchecked(&mut self, mut face_data: FaceData) -> Face {
         let index = Face(self.faces_half_edges.as_ref().unwrap().len());
 
@@ -265,6 +390,22 @@ impl Frame {
         face_data.half_edges.iter().enumerate().for_each(|(i, &h)| ec.at_mut(h).push(FaceCorner(index, i)));
         self.faces_half_edges.as_mut().unwrap().push(face_data.half_edges);
         self.faces_custom.iter_mut().for_each(|(k, vec)| vec.push(face_data.custom.swap_remove(k).unwrap()));
+        index
+    }
+
+    /// Adds faces given some face data and returns the index of the first face
+    /// without checking whether adding the faces preserves the frame attributes.
+    /// See [`add_faces`](Frame::add_faces) for further documentation.
+    pub fn add_faces_unchecked(&mut self, mut face_datas: FaceDatas) -> Face {
+        let index = Face(self.faces_half_edges.as_ref().unwrap().len());
+        let _len = face_datas.len();
+
+        let ec = self.edges_face_corners.as_mut().unwrap();
+        for (f, hs) in face_datas.half_edges.iter().enumerate() {
+            hs.iter().enumerate().for_each(|(i, &h)| ec.at_mut(h).push(FaceCorner(index + Face(f), i)));
+        }
+        self.faces_half_edges.as_mut().unwrap().extend(face_datas.half_edges);
+        self.faces_custom.iter_mut().for_each(|(k, vec)| vec.extend(face_datas.custom.swap_remove(k).unwrap()));
         index
     }
 
@@ -283,38 +424,27 @@ impl Frame {
         fh[face].reverse();
     }
 
-    /// Adds an face given some face data and returns its index.
-    /// Modifies frame attributes as necessary to remove contradictions.
-    /// 
-    /// The half-edges in `face_data` should form a loop.
-    /// 
-    /// The face may be flipped if the attribute `FrameAttribute::Orientable` is set
-    /// and flipping it makes the frame oriented. This is a flip of the half-edges and
-    /// does not involve a cyclic permutation.
-    /// 
-    /// All fields that exists in this frame must have their respective field specified
-    /// in `face_data`
-    pub fn add_face(&mut self, face_data: FaceData) -> Face {
-        let ev = self.edges_vertices.as_ref().unwrap();
-        for (&h0, &h1) in face_data.half_edges.iter().zip(face_data.half_edges.iter().cycle().skip(1)) {
-            assert_eq!(ev.at(h0)[1], ev.at(h1)[0], "half-edges in added face must form a loop")
-        }
-
-        let index = self.add_face_unchecked(face_data);
-
+    fn fix_manifold_attributes_after_adding_faces(&mut self, faces: impl IntoIterator<Item = Face>) {
         let mut fan_map = indexmap! {};
 
+        let fh = self.faces_half_edges.as_ref().unwrap();
+        let ev = self.edges_vertices.as_ref().unwrap();
+        let mut half_edges = faces.into_iter().flat_map(|f| fh[f].iter().copied()).collect::<Vec<_>>();
+        half_edges.sort();
+        half_edges.dedup();
+        let mut vertices = half_edges.iter().map(|&h| ev.at(h)[0]).collect::<Vec<_>>();
+        vertices.sort();
+        vertices.dedup();
+
         if self.frame_attributes.contains(&FrameAttribute::Manifold) {
-            let half_edges = &self.faces_half_edges.as_ref().unwrap()[index];
-            let ev = self.edges_vertices.as_ref().unwrap();
-            for &h in half_edges {
+            for &v in &vertices {
                 // For manifold checking,
                 // It suffices to check that the vertex is manifold, because if the half-edge isn't manifold,
                 // then neither is the vertex.
                 // Meanwhile, we also get the fans, since we need them for reordering the half-edges around a vertex.
-                let entry = fan_map.entry(ev.at(h)[0]);
+                let entry = fan_map.entry(v);
                 if let Entry::Vacant(_) = &entry {
-                    let fans = self.vertex_fans_if_manifold(ev.at(h)[0]);
+                    let fans = self.vertex_fans_if_manifold(v);
                     if let Some(fans) = fans {
                         entry.or_insert(fans);
                     } else {
@@ -327,25 +457,16 @@ impl Frame {
         }
 
         if self.frame_attributes.contains(&FrameAttribute::Orientable) {
-            let mut flip = None;
-            let half_edges = &self.faces_half_edges.as_ref().unwrap()[index];
             let ec = self.edges_face_corners.as_ref().unwrap();
-            for &h in half_edges {
-                let new_flip = if ec.at(h).len() == 2 { Some(true) } else if ec.at(h.flipped()).len() == 1 { Some(false) } else { None };
-                if let (Some(flip_a), Some(flip_b)) = (flip, new_flip) {
-                    if flip_a != flip_b {
-                        self.frame_attributes.swap_remove(&FrameAttribute::Orientable);
-                        flip = None;
-                        break;
-                    }
+            for &h in &half_edges {
+                if ec.at(h).len() == 2 {
+                    self.frame_attributes.swap_remove(&FrameAttribute::Orientable);
+                    break;
                 }
-                flip = flip.or(new_flip);
             }
+        }
 
-            if flip == Some(true) {
-                self.flip_face(index);
-            }
-
+        if self.frame_attributes.contains(&FrameAttribute::Orientable) {
             // Flip fans if necessary
             let ec = self.edges_face_corners.as_ref().unwrap();
             let fh = self.faces_half_edges.as_ref().unwrap();
@@ -358,14 +479,57 @@ impl Frame {
             }
         }
 
-        // Finally, resort vertices
+        // Finally, resort vertices_half_edges
         if self.frame_attributes.contains(&FrameAttribute::Manifold) {
             let vh = self.vertices_half_edges.as_mut().unwrap();
             for (v, fans) in fan_map {
                 vh[v] = fans.into_iter().flat_map(|(fan, _)| fan).collect();
             }
         }
+    }
 
+    /// Adds an face given some face data and returns its index.
+    /// 
+    /// The half-edges in `face_data` should form a loop.
+    /// 
+    /// If the mesh is no longer a manifold, then [`Manifold`](FrameAttribute::Manifold) is cleared.
+    /// If the mesh is no longer orient*ed* (even if it's stil orient*able*), then
+    /// [`Orientable`](FrameAttribute::Orientable) gets cleared. You'll have to call
+    /// [`try_into_orientable`](Frame::try_into_orientable) again.
+    /// 
+    /// All fields that exists in this frame must have their respective field specified
+    /// in `face_data`
+    pub fn add_face(&mut self, face_data: FaceData) -> Face {
+        let ev = self.edges_vertices.as_ref().unwrap();
+        for (&h0, &h1) in face_data.half_edges.iter().zip(face_data.half_edges.iter().cycle().skip(1)) {
+            assert_eq!(ev.at(h0)[1], ev.at(h1)[0], "half-edges in added face must form a loop")
+        }
+        let index = self.add_face_unchecked(face_data);
+        self.fix_manifold_attributes_after_adding_faces(iter::once(index));
+        index
+    }
+
+    /// Adds faces given some face data and returns the index of the first face.
+    /// 
+    /// The half-edges in `face_data` should form a loop.
+    /// 
+    /// If the mesh is no longer a manifold, then [`Manifold`](FrameAttribute::Manifold) is cleared.
+    /// If the mesh is no longer orient*ed* (even if it's stil orient*able*), then
+    /// [`Orientable`](FrameAttribute::Orientable) gets cleared. You'll have to call
+    /// [`try_into_orientable`](Frame::try_into_orientable) again.
+    /// 
+    /// All fields that exists in this frame must have their respective field specified
+    /// in `face_data`
+    pub fn add_faces(&mut self, face_datas: FaceDatas) -> Face {
+        let ev = self.edges_vertices.as_ref().unwrap();
+        for hs in &face_datas.half_edges {
+            for (&h0, &h1) in hs.iter().zip(hs.iter().cycle().skip(1)) {
+                assert_eq!(ev.at(h0)[1], ev.at(h1)[0], "half-edges in added face must form a loop")
+            }
+        }
+        let len = face_datas.len();
+        let index = self.add_faces_unchecked(face_datas);
+        self.fix_manifold_attributes_after_adding_faces((0..len).map(|i| index + Face(i)));
         index
     }
 
@@ -807,20 +971,20 @@ mod test {
         let two_panel = frame;
 
         let mut frame = two_panel.clone();
-        // Still orientable, but needs a flip
+        // Still orientable, but since it needs a flip, the flag gets cleared.
         let [h14, h15] = frame.add_edge_like(E(0), [V(2), V(0)]).split();
         let [h16, h17] = frame.add_edge_like(E(0), [V(5), V(3)]).split();
         let index = frame.add_face(FaceData {
             half_edges: vec![H(5), h14, H(0), h17],
             custom: indexmap! { "test:test".to_owned() => json!(3) }
         });
-        assert_eq!(frame.frame_attributes, indexset! {Manifold, Orientable});
+        assert_eq!(frame.frame_attributes, indexset! {Manifold});
         frame.assert_topology_consistent();
         assert_eq!(index, F(2));
         assert_eq!(frame.faces_half_edges, Some(ti_vec![
             vec![H(2), H(12), H(5), H(9)],
             vec![H(0), H(10), H(3), H(7)],
-            vec![h16, H(1), h15, H(4)],
+            vec![H(5), h14, H(0), h17],
         ]));
 
         let mut frame = two_panel.clone();

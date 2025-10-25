@@ -669,9 +669,9 @@ impl UlpsEq for BasedExpr {
 }
 
 impl RelativeEq for BasedExpr {
-    /// Returns a baseless 1. These values are exact; no need for epsilon comparison.
+    /// Returns a baseless 0. These values are exact; no need for epsilon comparison.
     fn default_max_relative() -> Self::Epsilon {
-        Self::BASELESS_ONE
+        Self::BASELESS_ZERO
     }
 
     /// Equivalent to checking equality
