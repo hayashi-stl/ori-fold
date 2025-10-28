@@ -1,7 +1,6 @@
 use std::{cmp::Ordering, iter::Sum, mem, ops::{Mul, Neg, Sub}};
 
 use exact_number::{malachite::base::num::arithmetic::traits::{Sign, CheckedDiv}, rat::Rat, BasedExpr, Angle};
-use float_ord::FloatOrd;
 use nalgebra::{allocator::Allocator, matrix, vector, Affine2, ArrayStorage, ClosedSubAssign, ComplexField, Const, DefaultAllocator, DimNameAdd, DimNameSum, Dyn, Matrix2, MatrixView2xX, RealField, SVector, Scalar, TAffine, ToTypenum, Transform, Vector, Vector2, VectorView, VectorView2, U1};
 use num_traits::{Num, NumAssign, NumAssignRef, NumRef, RefNum, Signed, Zero};
 
@@ -10,6 +9,67 @@ pub type MatrixView2Dyn<'s, T> = MatrixView2xX<'s, T, U1, Dyn>;
 
 pub trait NumEx: Default + PartialOrd + Num + NumRef + NumAssignRef + Scalar + NumAssign + Signed + Neg<Output = Self> {}
 impl<T> NumEx for T where T: Default + PartialOrd + Num + NumRef + NumAssignRef + Scalar + NumAssign + Signed + Neg<Output = Self> {}
+
+/// A wrapper for floats, that implements total equality and ordering
+/// and hashing.
+/// 
+/// Taken from https://docs.rs/float-ord/0.3.2/src/float_ord/lib.rs.html,
+/// and modified to have From and Into implementations
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct FloatOrd<T>(pub T);
+
+macro_rules! float_ord_impl {
+    ($f:ident, $i:ident, $n:expr) => {
+        impl FloatOrd<$f> {
+            fn convert(self) -> $i {
+                let u = unsafe { std::mem::transmute::<$f, $i>(self.0) };
+                let bit = 1 << ($n - 1);
+                if u & bit == 0 {
+                    u | bit
+                } else {
+                    !u
+                }
+            }
+        }
+        impl PartialEq for FloatOrd<$f> {
+            fn eq(&self, other: &Self) -> bool {
+                self.convert() == other.convert()
+            }
+        }
+        impl Eq for FloatOrd<$f> {}
+        impl PartialOrd for FloatOrd<$f> {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                self.convert().partial_cmp(&other.convert())
+            }
+        }
+        impl Ord for FloatOrd<$f> {
+            fn cmp(&self, other: &Self) -> Ordering {
+                self.convert().cmp(&other.convert())
+            }
+        }
+        impl std::hash::Hash for FloatOrd<$f> {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.convert().hash(state);
+            }
+        }
+
+        impl From<$f> for FloatOrd<$f> {
+            fn from(val: $f) -> Self {
+                Self(val)
+            }
+        }
+
+        impl From<FloatOrd<$f>> for $f {
+            fn from(val: FloatOrd<$f>) -> Self {
+                val.0
+            }
+        }
+    }
+}
+
+float_ord_impl!(f32, u32, 32);
+float_ord_impl!(f64, u64, 64);
 
 ///// An angle, either exact or approximate
 //#[derive(Clone, Debug, PartialEq, PartialOrd)]
@@ -20,7 +80,7 @@ impl<T> NumEx for T where T: Default + PartialOrd + Num + NumRef + NumAssignRef 
 
 /// A trait that allows getting the angle of a 2D vector of this type.
 /// This is often used for sorting by angle.
-pub trait AngleRep: Sized {
+pub trait Atan2: Sized {
     type Output: Ord;
     /// The angle representative, representing the angle of this vector.
     /// 
@@ -36,7 +96,7 @@ pub trait AngleRep: Sized {
     fn angle_rep(self) -> Self::Output;
 }
 
-impl AngleRep for Vector2<f32> {
+impl Atan2 for Vector2<f32> {
     type Output = FloatOrd<f32>;
 
     /// The `[-1, 0]` direction returns the maximum value because that's how `f32::atan2` is defined
@@ -45,7 +105,7 @@ impl AngleRep for Vector2<f32> {
     }
 }
 
-impl AngleRep for Vector2<f64> {
+impl Atan2 for Vector2<f64> {
     type Output = FloatOrd<f64>;
     
     /// The `[-1, 0]` direction returns the maximum value because that's how `f64::atan2` is defined
@@ -54,7 +114,7 @@ impl AngleRep for Vector2<f64> {
     }
 }
 
-impl AngleRep for Vector2<BasedExpr> {
+impl Atan2 for Vector2<BasedExpr> {
     type Output = Angle;
 
     /// The `[-1, 0]` direction returns the minimum value for representation convience.
@@ -79,7 +139,7 @@ impl AngleRep for Vector2<BasedExpr> {
 /// Sorts the coordinates by angle increasing, according to `AngleRep::angle_rep`.
 pub fn sort_by_angle<T, S, F: FnMut(&T) -> Vector2<S>>(points: &mut [T], origin: &T, mut mapping: F) where 
     S: Scalar + ClosedSubAssign,
-    Vector2<S>: AngleRep
+    Vector2<S>: Atan2
 {
     let origin = mapping(origin);
     points.sort_by_key(|p| (mapping(p) - &origin).angle_rep());
@@ -91,7 +151,7 @@ pub fn sort_by_angle<T, S, F: FnMut(&T) -> Vector2<S>>(points: &mut [T], origin:
 /// but *can* from elsewhere. See https://github.com/rust-lang/rust/issues/34162
 pub fn sort_by_angle_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(points: &mut [T], origin: &T, mut mapping: F) where 
     S: Scalar + ClosedSubAssign,
-    Vector2<S>: AngleRep
+    Vector2<S>: Atan2
 {
     let origin = mapping(origin);
     points.sort_by_key(|p| (mapping(p) - &origin).angle_rep());
@@ -103,7 +163,7 @@ pub fn sort_by_angle_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(points
 /// but *not* from elsewhere. See https://github.com/rust-lang/rust/issues/34162
 pub fn sort_by_angle_field<T, S, F: FnMut(&T) -> VectorView2Dyn<S>>(points: &mut [T], origin: &T, mut mapping: F) where 
     S: Scalar + ClosedSubAssign,
-    Vector2<S>: AngleRep
+    Vector2<S>: Atan2
 {
     let origin = mapping(origin);
     points.sort_by_key(|p| (mapping(p) - &origin).angle_rep());
@@ -231,6 +291,17 @@ pub fn parametric_line_intersect<T: NumEx + RealField>
     mtx.try_inverse().map(|inv| inv * start_diff)
 }
 
+/// The result of intersecting two lines
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LineIntersection<T> {
+    /// The lines don't intersect (a.k.a. they're parallel)
+    None,
+    /// An intersection between non-parallel segments
+    Intersection(Vector2<T>),
+    /// The lines are collinear
+    Collinear,
+}
+
 /// The result of intersecting two segments
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SegmentIntersection<T> {
@@ -241,6 +312,28 @@ pub enum SegmentIntersection<T> {
     /// A shared section between two collinear segments.
     /// The order of the points is the order within the first segment.
     Collinear([Vector2<T>; 2]),
+}
+
+/// Gets the intersection between two lines `line_a` and `line_b`
+/// 
+/// Warning: this does not use epsilon comparison. Not relevant for exact coordinates,
+/// but be careful when using floating-point numbers
+pub fn line_intersect<T: NumEx + RealField>(line_a: [VectorView2Dyn<T>; 2], line_b: [VectorView2Dyn<T>; 2]) -> LineIntersection<T> {
+    if let Some(mut t) = parametric_line_intersect(line_a.clone(), line_b.clone()) {
+        LineIntersection::Intersection((&line_a[1] - &line_a[0]) * mem::take(&mut t.x) + &line_a[0])
+    } else {
+        // The lines are parallel.
+        let vec_a = &line_a[1] - &line_a[0];
+
+        if vec_a == Vector2::zeros() {
+            let vec_b = &line_b[1] - &line_b[0];
+            if !(&line_b[0] - &line_a[0]).perp(&vec_b).is_zero() { return LineIntersection::None } // not collinear
+            return LineIntersection::Collinear
+        }
+
+        if !(&line_b[0] - &line_a[0]).perp(&vec_a).is_zero() { return LineIntersection::None } // not collinear in the first place
+        LineIntersection::Collinear
+    }
 }
 
 /// Gets the intersection between two segments `seg_a` and `seg_b`. Note that boundary points are included.
@@ -255,8 +348,26 @@ pub fn segment_intersect<T: NumEx + RealField>(seg_a: [VectorView2Dyn<T>; 2], se
             SegmentIntersection::None
         }
     } else {
-        let mut vec_a = &seg_a[1] - &seg_a[0];
-        if vec_a == Vector2::zeros() { vec_a.x = T::one(); }
+        // The lines are parallel.
+        let vec_a = &seg_a[1] - &seg_a[0];
+
+        if vec_a == Vector2::zeros() {
+            let vec_b = &seg_b[1] - &seg_b[0];
+            if !(&seg_b[0] - &seg_a[0]).perp(&vec_b).is_zero() { return SegmentIntersection::None } // not collinear
+
+            if vec_b == Vector2::zeros() {
+                return if seg_a[0] == seg_b[0] {
+                    SegmentIntersection::Collinear(seg_a.map(|p| p.into_owned()))
+                } else { SegmentIntersection::None }
+            }
+            let len2 = vec_b.dot(&vec_b);
+            let t = (&seg_a[0] - &seg_b[0]).dot(&vec_b) / len2;
+            return if t >= T::zero() && t <= T::one() {
+                SegmentIntersection::Collinear(seg_a.map(|p| p.into_owned()))
+            } else { SegmentIntersection::None }
+        }
+
+        if !(&seg_b[0] - &seg_a[0]).perp(&vec_a).is_zero() { return SegmentIntersection::None } // not collinear in the first place
         let len2 = vec_a.dot(&vec_a);
         let mut t0 = (&seg_b[0] - &seg_a[0]).dot(&vec_a) / &len2;
         let mut t1 = (&seg_b[1] - &seg_a[0]).dot(&vec_a) / &len2;
@@ -278,7 +389,7 @@ mod test {
     use exact_number::based_expr;
     use nalgebra::{matrix, vector, Affine2, ClosedSubAssign, Matrix2xX, Scalar, Vector2};
 
-    use crate::geom::{polygon_orientation, reflect_line, reflect_line_matrix, segment_intersect, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix, twice_signed_area, Angle, AngleRep, SegmentIntersection, VectorView2Dyn};
+    use crate::geom::{polygon_orientation, reflect_line, reflect_line_matrix, segment_intersect, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix, twice_signed_area, Angle, Atan2, SegmentIntersection, VectorView2Dyn};
 
     macro_rules! assert_lt {
         ($left:expr, $right:expr) => {
@@ -337,7 +448,7 @@ mod test {
     fn sort_by_angle_test<T, S>(mut points: Vec<T>, origin: T, mut mapping: impl FnMut(&T) -> VectorView2Dyn<S>, expected: Vec<T>) where
         T: Clone + Debug + PartialEq,
         S: Scalar + ClosedSubAssign,
-        Vector2<S>: AngleRep
+        Vector2<S>: Atan2
     {
         let (mut indexes, expected_indexes) = permutation(&points, &expected);
         let mut points_a = points.clone();
@@ -589,9 +700,12 @@ mod test {
             [exact_view_2![(-1), (0)], exact_view_2![(1), (0)]], [exact_view_2![(0), (-2)], exact_view_2![(0), (-1)]]
         ), SegmentIntersection::None);
         
-        // parallell lines
+        // parallel lines
         assert_eq!(segment_intersect(
             [exact_view_2![(0), (1)], exact_view_2![(1), (2)]], [exact_view_2![(2), (4)], exact_view_2![(4), (6)]]
+        ), SegmentIntersection::None);
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (1)], exact_view_2![(1), (2)]], [exact_view_2![(0), (0)], exact_view_2![(1), (1)]]
         ), SegmentIntersection::None);
 
         // collinear lines that don't intersect
@@ -630,5 +744,26 @@ mod test {
         assert_eq!(segment_intersect(
             [exact_view_2![(0), (1)], exact_view_2![(2), (3)]], [exact_view_2![(2), (3)], exact_view_2![(3), (4)]]
         ), SegmentIntersection::Collinear([exact_vec_2![(2), (3)], exact_vec_2![(2), (3)]]));
+
+        // point intersections
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (0)], exact_view_2![(0), (2)]], [exact_view_2![(1), (1)], exact_view_2![(1), (1)]]
+        ), SegmentIntersection::None);
+        assert_eq!(segment_intersect(
+            [exact_view_2![(1), (1)], exact_view_2![(1), (1)]], [exact_view_2![(2), (0)], exact_view_2![(2), (2)]]
+        ), SegmentIntersection::None);
+        assert_eq!(segment_intersect(
+            [exact_view_2![(1), (1)], exact_view_2![(1), (1)]], [exact_view_2![(2), (1)], exact_view_2![(2), (1)]]
+        ), SegmentIntersection::None);
+
+        assert_eq!(segment_intersect(
+            [exact_view_2![(0), (0)], exact_view_2![(0), (2)]], [exact_view_2![(0), (1)], exact_view_2![(0), (1)]]
+        ), SegmentIntersection::Collinear([exact_vec_2![(0), (1)], exact_vec_2![(0), (1)]]));
+        assert_eq!(segment_intersect(
+            [exact_view_2![(1), (1)], exact_view_2![(1), (1)]], [exact_view_2![(1), (0)], exact_view_2![(1), (2)]]
+        ), SegmentIntersection::Collinear([exact_vec_2![(1), (1)], exact_vec_2![(1), (1)]]));
+        assert_eq!(segment_intersect(
+            [exact_view_2![(1), (1)], exact_view_2![(1), (1)]], [exact_view_2![(1), (1)], exact_view_2![(1), (1)]]
+        ), SegmentIntersection::Collinear([exact_vec_2![(1), (1)], exact_vec_2![(1), (1)]]));
     }
 }

@@ -15,5 +15,12 @@ num = "0.4.3"
 peg = "0.8.5"
 simba = "0.9.1"
 
+[dev-dependencies]
+criterion = "0.7.0"
+
+[[bench]]
+name = "benchmark"
+harness = false
+
 [package.metadata.docs.rs]
 rustdoc-args = [ "--html-in-header", "./src/docs-header.html" ]

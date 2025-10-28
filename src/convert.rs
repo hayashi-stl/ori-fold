@@ -6,7 +6,7 @@ use nalgebra::{vector, Affine2, ClosedSubAssign, DMatrix, DMatrixView, Matrix2xX
 use num_traits::RefNum;
 use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
-use crate::{filter, fold::{EdgesVerticesEx, CoordsRef, Edge, EdgeAssignment, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdgesSlice, Fold, Frame, FrameAttribute, HalfEdge, Vertex}, geom::{sort_by_angle_ref, AngleRep, MatrixView2Dyn, NumEx}, manifold::OrientableError};
+use crate::{filter, fold::{EdgesVerticesEx, CoordsRef, Edge, EdgeAssignment, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdgesSlice, Fold, Frame, FrameAttribute, HalfEdge, Vertex}, geom::{sort_by_angle_ref, Atan2, MatrixView2Dyn, NumEx}, manifold::OrientableError};
 use crate::geom;
 
 /// Assuming a locally flat foldable crease pattern in the xy plane
