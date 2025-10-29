@@ -39,6 +39,11 @@ impl BasedExpr {
         }
     }
 
+    /// Rounds this expression to the nearset f64
+    pub fn round_to_nearest_f64(&self) -> f64 {
+        self.round_to_f64(RoundingMode::Nearest)
+    }
+
     pub fn is_integer(&self) -> bool {
         match self {
             BasedExpr::Baseless(a) => a.is_integer(),

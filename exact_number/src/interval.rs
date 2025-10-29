@@ -710,14 +710,14 @@ impl Fixed {
 
         let mut shift = nat.floor_log_base_2() as i64 - (f64::MANTISSA_DIGITS as i64 - 1);
         let mut bits = (&nat).shr_round(shift, mode).0;
-        println!("nat: 0x{:x}, shift: {}, bits: 0x{:x}", nat, shift, bits);
+        //println!("nat: 0x{:x}, shift: {}, bits: 0x{:x}", nat, shift, bits);
         if bits.floor_log_base_2() == f64::MANTISSA_DIGITS as u64 {
             // Sometimes this happens because of rounding
             shift += 1;
             bits >>= 1; // This won't round up, so it's safe
         }
         let exponent = -(self.1 as i64) + shift + (f64::MANTISSA_DIGITS as i64 - 1);
-        println!("exp: {}", exponent);
+        //println!("exp: {}", exponent);
         if exponent >= f64::MAX_EXP as i64 {
             // Infinities
             return (sign * -2 + 1) as f64 * f64::INFINITY;

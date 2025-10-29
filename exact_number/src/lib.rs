@@ -7,7 +7,7 @@ pub use malachite;
 use malachite::base::num::basic::traits::{Zero as _};
 use malachite::Integer;
 use malachite::base::num::arithmetic::traits::{Abs, Sign, Square};
-use nalgebra::{DVector, DVectorView};
+use nalgebra::{vector, DVector, DVectorView};
 use num::{Num, One, Signed, Zero};
 
 use crate::basis::{ArcBasis, Basis, BasisError, SqrtExpr};
@@ -285,10 +285,18 @@ impl BasedExpr {
         }
     }
 
+    /// Constructs a `BasedExpr` representing a rational number
+    /// with the given basis.
     pub fn based_rational(q: Rat, basis: ArcBasis) -> Self {
         let mut coeffs = vec![Rat::ZERO; basis.exprs.len()];
         coeffs[0] = q;
         Self::Based(coeffs.into(), basis)
+    }
+
+    /// Constructs a `BasedExpr` representing a rational number
+    /// in the rational basis ($[1]$)
+    pub fn with_rational_basis(q: Rat) -> Self {
+        Self::Based(DVector::from_vec(vec![q]), Basis::new_arc(vec![SqrtExpr::ONE]))
     }
 
     fn has_basis(&self) -> bool {
