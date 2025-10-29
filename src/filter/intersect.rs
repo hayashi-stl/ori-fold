@@ -1,7 +1,7 @@
-use std::{cell::RefCell, cmp::{Ordering, Reverse}, collections::BinaryHeap, f64::consts::E, marker::PhantomData, mem, rc::Rc, slice};
+use std::{cmp::{Ordering, Reverse}, collections::BinaryHeap, marker::PhantomData, mem, slice};
 
 use exact_number::BasedExpr;
-use nalgebra::{vector, DMatrix, RawStorage, RealField, Vector2};
+use nalgebra::{vector, RawStorage, RealField, Vector2};
 use num_traits::{RefNum, Zero};
 
 use crate::{filter::Coordinate, geom::{self, FloatOrd, LineIntersection, NumEx, SegmentIntersection, VectorView2Dyn}, Frame};
@@ -28,30 +28,6 @@ use crate::{filter::Coordinate, geom::{self, FloatOrd, LineIntersection, NumEx, 
 //     if SL_E is not empty
 //         robustly check intersection between end of SL_E and next in SL, and add Intersection event to PQ if there's one in the future
 // Now do it all again, but transform coordinates as (y + ιx, x) instead. (skip for exact coordinates)
-
-#[derive(Clone, Debug)]
-struct EventCmp<U, E>([U; 2], EventCase<E>);
-
-impl<U: PartialEq, E> PartialEq for EventCmp<U, E> {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl<U: Eq, E> Eq for EventCmp<U, E> {}
-
-impl<U: PartialOrd, E> PartialOrd for EventCmp<U, E> {
-    /// Reversed for use in BinaryHeap
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        other.0.partial_cmp(&self.0)
-    }
-}
-
-impl<U: Ord, E> Ord for EventCmp<U, E> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.0.cmp(&self.0)
-    }
-}
 
 /// An `Option` with its comparison between Some and None reversed.
 /// Needed because vertical lines have the highest slope after the (x + εy, y) transform.
@@ -513,16 +489,6 @@ impl<E: Ord + Clone> IntersectCoordinate<E> for BasedExpr {
     }
 }
 
-impl<E> EventCase<E> {
-    fn involved_segments(&self) -> &[E] {
-        match self {
-            Self::Start(s) => slice::from_ref(s),
-            Self::Intersect(ss) => ss,
-            Self::End(s) => slice::from_ref(s),
-        }
-    }
-}
-
 pub fn intersect_all_segments_ref<'a,
     E: Eq + Clone + 'a,
     T: IntersectCoordinate<E>,
@@ -622,7 +588,7 @@ mod test {
     use std::fmt::Debug;
 
     use approx::relative_ne;
-    use exact_number::{based_expr, basis::{Basis, SqrtExpr}, BasedExpr};
+    use exact_number::{BasedExpr};
     use nalgebra::{vector, Vector2};
 
     use crate::{filter::intersect::intersect_all_segments_ref, geom::FloatOrd};

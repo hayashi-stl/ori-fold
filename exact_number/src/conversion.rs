@@ -1,9 +1,6 @@
 
-use std::sync::LazyLock;
-
 use malachite::{base::{num::conversion::traits::{IsInteger, RoundingFrom}, rounding_modes::RoundingMode}, Integer, Natural};
 use nalgebra::DVector;
-use num::Num;
 
 use crate::{interval::Interval, rat::Rat, BasedExpr};
 

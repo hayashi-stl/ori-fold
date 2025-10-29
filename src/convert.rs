@@ -1,12 +1,11 @@
 use std::mem;
 
 use approx::{relative_eq, relative_ne};
-use indexmap::IndexMap;
-use nalgebra::{vector, Affine2, ClosedSubAssign, DMatrix, DMatrixView, Matrix2xX, Matrix3, Point2, RealField, Reflection2, Scalar, Vector2};
+use nalgebra::{vector, Affine2, DMatrixView, Matrix2xX, Matrix3, RealField};
 use num_traits::RefNum;
-use typed_index_collections::{ti_vec, TiSlice, TiVec};
+use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{filter, fold::{EdgesVerticesEx, CoordsRef, Edge, EdgeAssignment, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdgesSlice, Fold, Frame, FrameAttribute, HalfEdge, Vertex}, geom::{sort_by_angle_ref, Atan2, MatrixView2Dyn, NumEx}, manifold::OrientableError};
+use crate::{fold::{EdgesVerticesEx, Edge, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdgesSlice, Frame, FrameAttribute, Vertex}, geom::{MatrixView2Dyn, NumEx}, manifold::OrientableError};
 use crate::geom;
 
 /// Assuming a locally flat foldable crease pattern in the xy plane
@@ -189,9 +188,9 @@ impl Frame {
 #[cfg(test)]
 mod test {
     use exact_number::based_expr;
-    use nalgebra::{Affine2, DMatrix, DMatrixView, Matrix2xX, RealField};
+    use nalgebra::{Affine2, DMatrix, Matrix2xX, RealField};
     use num_traits::RefNum;
-    use typed_index_collections::{ti_vec, TiSlice, TiVec};
+    use typed_index_collections::{ti_vec, TiVec};
 
     use crate::{fold::{Face as F, Frame, HalfEdge as H}, geom::NumEx};
 

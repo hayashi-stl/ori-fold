@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{path::Path};
 
 use exact_number::{basis::ArcBasis, rat::{Integer, Natural, Rat}, BasedExpr, Angle};
 use exact_number::malachite::base::num::basic::traits::{Zero, One};
@@ -9,7 +9,7 @@ use serde::de::Error;
 use serde_json::{Map, Value};
 use typed_index_collections::TiVec;
 
-use crate::{fold::{Edge, EdgeAssignment, EdgeOrder, Face, FaceOrder, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit, Vertex}, ser_de::basis::deserialize};
+use crate::{fold::{Edge, EdgeAssignment, EdgeOrder, Face, FaceOrder, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit, Vertex}};
 
 mod pretty;
 mod convert;
@@ -421,7 +421,7 @@ pub mod file_spec {
 
 pub mod basis {
     use exact_number::basis::{ArcBasis, Basis, SqrtExpr};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serializer};
     use serde::de::Error;
 
     pub fn serialize<S>(basis: &Option<ArcBasis>, ser: S) -> Result<S::Ok, S::Error> where S: Serializer {
@@ -448,13 +448,13 @@ pub mod basis {
 #[cfg(test)]
 mod test {
     use indexmap::{indexset, IndexMap, IndexSet};
-    use exact_number::{based_expr, basis::{ArcBasis, Basis}, sqrt_expr, Angle};
+    use exact_number::{based_expr, basis::{Basis}, sqrt_expr, Angle};
     use nalgebra::DMatrix;
     use serde_json::{json, Value};
     use typed_index_collections::ti_vec;
 
     use crate::{fold::{EdgeAssignment, FileClass, Fold, Frame, FrameAttribute, FrameClass, FrameIndex, FrameUnit}};
-    use crate::fold::{Vertex as V, Edge as E, HalfEdge as H, Face as F, FaceCorner as C};
+    use crate::fold::{Vertex as V, HalfEdge as H, Face as F, FaceCorner as C};
 
     #[test]
     fn test_load_partial_metadata() {

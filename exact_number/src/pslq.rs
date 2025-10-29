@@ -27,44 +27,6 @@ pub enum IntegerRelationError {
 
 type FBig = dashu_float::FBig<dashu_float::round::mode::Zero, 2>;
 
-fn checked_div_v(a: FBig, b: FBig) -> Result<FBig, IntegerRelationError> {
-    if b == FBig::ZERO { Err(IntegerRelationError::DivisionByZero)?; }
-    Ok(a / b)
-}
-
-fn checked_div_r(a: &FBig, b: &FBig) -> Result<FBig, IntegerRelationError> {
-    if b == &FBig::ZERO { Err(IntegerRelationError::DivisionByZero)?; }
-    Ok(a / b)
-}
-
-fn checked_round(a: FBig) -> Result<FBig, IntegerRelationError> {
-    // Skip the panicking
-    //print!("Rounding {}, ", a);
-    let (mut sig, exp) = (a + FBig::from_parts(1.into(), -1)).into_repr().into_parts();
-    if exp > 0 {
-        sig <<= exp as usize;
-    } else {
-        sig >>= -exp as usize;
-    }
-    let result = FBig::from_parts(sig, 0);
-    //println!("Round result: {}", result);
-    Ok(result)
-    //#[cfg(debug_assertions)]
-    //{
-    //    // Taken from internal code
-    //    if a.repr().exponent() + (a.repr().digits_ub() as isize) >= -2 {
-    //        let (fract, exponent) = if a.repr().exponent() + (a.repr().digits_ub() as isize) < -1 {
-    //            (a.repr().significand().clone(), -(a.context().precision() as isize))
-    //        } else {
-    //            a.fract().into_repr().into_parts()
-    //        };
-    //        println!("int: {}, fract: {}, exp: {}, true exp: {}", a.trunc(), fract, exponent, a.repr().exponent());
-    //        if exponent <= 0 && fract.clone().unsigned_abs() >= UBig::from_word(2).pow(-exponent as usize) { Err(IntegerRelationError::FloatRoundGlitched)?; }
-    //    }
-    //}
-    //Ok(a.round())
-}
-
 fn dec<R: Dim, C: Dim>(mtx: &Matrix<Integer, R, C, VecStorage<Integer, R, C>>, precision: usize) -> Matrix<DBig, R, C, VecStorage<DBig, R, C>> where
     DefaultAllocator: Allocator<R, C, Buffer<DBig> = VecStorage<DBig, R, C>>,
     VecStorage<Integer, R, C>: Storage<Integer, R, C>,
@@ -99,9 +61,9 @@ fn sqrt_fixed(x: Integer, precision: usize) -> Integer {
     (x << precision).floor_sqrt()
 }
 
-fn sqrt_fixed_r(x: &Integer, precision: usize) -> Integer {
-    (x << precision).floor_sqrt()
-}
+//fn sqrt_fixed_r(x: &Integer, precision: usize) -> Integer {
+//    (x << precision).floor_sqrt()
+//}
 
 fn round_fixed(x: Integer, precision: usize) -> Integer {
     return ((x + (Integer::power_of_2(precision as u64 - 1))) >> precision) << precision
@@ -159,8 +121,11 @@ fn maybe_integer_relation(basis: &[FBig], max_coeff: &Integer, max_steps: usize)
     if min_x < &tolerance / Integer::from(100) { return Err(IntegerRelationError::TinyNumberInBasis(min_x_i)); }
 
     let gamma = sqrt_fixed(Integer::power_of_2(precision as u64) * Integer::from(4) / Integer::from(3), precision);
+    #[allow(non_snake_case)]
     let mut A = DMatrix::repeat(basis.len() + 1, basis.len() + 1, Integer::ZERO);
+    #[allow(non_snake_case)]
     let mut B = DMatrix::repeat(basis.len() + 1, basis.len() + 1, Integer::ZERO);
+    #[allow(non_snake_case)]
     let mut H = DMatrix::repeat(basis.len() + 1, basis.len() + 1, Integer::ZERO);
     
     // Initialization

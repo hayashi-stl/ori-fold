@@ -7,8 +7,8 @@ pub use malachite;
 use malachite::base::num::basic::traits::{Zero as _};
 use malachite::Integer;
 use malachite::base::num::arithmetic::traits::{Abs, Sign, Square};
-use nalgebra::{vector, DVector, DVectorView};
-use num::{Num, One, Signed, Zero};
+use nalgebra::{DVector, DVectorView};
+use num::{One, Signed, Zero};
 
 use crate::basis::{ArcBasis, Basis, BasisError, SqrtExpr};
 use crate::interval::{Fixed, Interval};
@@ -173,14 +173,6 @@ impl Default for BasedExpr {
     }
 }
 
-fn longer_first<T>(lhs: Vec<T>, rhs: Vec<T>) -> (Vec<T>, Vec<T>) {
-    if lhs.len() < rhs.len() { (rhs, lhs) } else { (lhs, rhs) }
-}
-
-fn longer_first_ref<'a, T>(lhs: &'a [T], rhs: &'a [T]) -> (&'a [T], &'a [T]) {
-    if lhs.len() < rhs.len() { (rhs, lhs) } else { (lhs, rhs) }
-}
-
 impl BasedExpr {
     pub const BASELESS_ZERO: Self = Self::Baseless(Rat::ZERO);
     pub const BASELESS_ONE: Self = Self::Baseless(Rat::ONE);
@@ -240,7 +232,7 @@ impl BasedExpr {
     pub fn sign(&self) -> Ordering {
         match self {
             Self::Baseless(q) => q.sign(),
-            Self::Based(coeffs, basis) => {
+            Self::Based(coeffs, _) => {
                 if coeffs.iter().all(|c| c.is_zero()) {
                     return Ordering::Equal;
                 }
@@ -302,7 +294,7 @@ impl BasedExpr {
     fn has_basis(&self) -> bool {
         match self {
             Self::Baseless(_) => false,
-            Self::Based(_, basis) => true
+            Self::Based(_, _) => true
         }
     }
 
@@ -375,54 +367,24 @@ impl BasedExpr {
         }
     }
 
-    fn assert_compatible(&self, other: &BasedExpr) -> () {
+    pub fn assert_compatible(&self, other: &BasedExpr) -> () {
         if let (Self::Based(_, basis_a), Self::Based(_, basis_b)) = (self, other) {
             basis_a.assert_compatible(basis_b);
         }
     }
 
-    fn into_coeffs_basis(self) -> (DVector<Rat>, Option<ArcBasis>) {
+    pub fn into_coeffs_basis(self) -> (DVector<Rat>, Option<ArcBasis>) {
         match self {
             Self::Baseless(q) => (vec![q].into(), None),
             Self::Based(coeffs, basis) => (coeffs, Some(basis))
         }
     }
 
-    fn to_coeffs_basis(&'_ self) -> (DVectorView<'_, Rat>, Option<&'_ ArcBasis>) {
+    pub fn coeffs_basis(&'_ self) -> (DVectorView<'_, Rat>, Option<&'_ ArcBasis>) {
         match self {
             Self::Baseless(q) => (DVectorView::from_slice(std::slice::from_ref(q), 1), None),
             Self::Based(coeffs, basis) => (coeffs.as_view(), Some(basis))
         }
-    }
-
-    fn into_coeffs_basis_2(self, other: BasedExpr) -> (DVector<Rat>, DVector<Rat>, Option<ArcBasis>) {
-        let (coeffs_a, basis_a) = self.into_coeffs_basis();
-        let (coeffs_b, basis_b) = other.into_coeffs_basis();
-        (coeffs_a, coeffs_b, ArcBasis::into_unified(basis_a, basis_b))
-    }
-
-    fn into_coeffs_basis_2_vr(self, other: &'_ BasedExpr) -> (DVector<Rat>, DVectorView<'_, Rat>, Option<ArcBasis>) {
-        let (coeffs_a, basis_a) = self.into_coeffs_basis();
-        let (coeffs_b, basis_b) = other.to_coeffs_basis();
-        (coeffs_a, coeffs_b, ArcBasis::into_unified_vr(basis_a, basis_b))
-    }
-
-    fn into_coeffs_basis_2_rv(&'_ self, other: BasedExpr) -> (DVectorView<'_, Rat>, DVector<Rat>, Option<ArcBasis>) {
-        let (coeffs_a, basis_a) = self.to_coeffs_basis();
-        let (coeffs_b, basis_b) = other.into_coeffs_basis();
-        (coeffs_a, coeffs_b, ArcBasis::into_unified_rv(basis_a, basis_b))
-    }
-
-    fn into_coeffs_basis_2_rr<'a>(&'a self, other: &'a BasedExpr) -> (DVectorView<'a, Rat>, DVectorView<'a, Rat>, Option<ArcBasis>) {
-        let (coeffs_a, basis_a) = self.to_coeffs_basis();
-        let (coeffs_b, basis_b) = other.to_coeffs_basis();
-        (coeffs_a, coeffs_b, ArcBasis::to_unified(basis_a, basis_b).cloned())
-    }
-
-    fn to_coeffs_basis_2<'a>(&'a self, other: &'a BasedExpr) -> (DVectorView<'a, Rat>, DVectorView<'a, Rat>, Option<&'a ArcBasis>) {
-        let (coeffs_a, basis_a) = self.to_coeffs_basis();
-        let (coeffs_b, basis_b) = other.to_coeffs_basis();
-        (coeffs_a, coeffs_b, ArcBasis::to_unified(basis_a, basis_b))
     }
 }
 

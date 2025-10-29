@@ -1,7 +1,6 @@
 use std::{mem, ops::{Add, AddAssign, Neg, Sub, SubAssign}};
 
 use malachite::base::num::arithmetic::traits::{CheckedDiv, NegAssign};
-use num::Signed;
 
 use crate::BasedExpr;
 
@@ -13,6 +12,7 @@ pub struct Angle {
     tan: Option<BasedExpr>
 }
 
+#[allow(unused_macros)]
 macro_rules! angle {
     ($turn:literal, -inf) => { $crate::angle::Angle::new($turn, None) };
     ($turn:literal, $($tt:tt)*) => { $crate::angle::Angle::new($turn, Some($crate::based_expr!($($tt)*))) };
@@ -117,7 +117,7 @@ impl AddAssign<Angle> for Angle {
 }
 
 impl AddAssign<&Angle> for Angle {
-    fn add_assign(&mut self, mut rhs: &Angle) {
+    fn add_assign(&mut self, rhs: &Angle) {
         match (self.tan.as_mut(), rhs.tan.as_ref()) {
             (None, None) => {
                 self.turn_value += rhs.turn_value - 1;

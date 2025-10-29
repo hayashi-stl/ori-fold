@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, iter::{Product, Sum}, ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign}};
 
 use approx::{AbsDiffEq, RelativeEq, UlpsEq};
-use malachite::{base::{num::{arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, NegAssign, Pow, Sign}, conversion::traits::RoundingFrom, logic::traits::SignificantBits}, rounding_modes::RoundingMode}, Integer};
+use malachite::{base::{num::{arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, NegAssign, Pow, Sign}, logic::traits::SignificantBits}, rounding_modes::RoundingMode}};
 use nalgebra::{ComplexField, DMatrix, DVector, Field, RealField, SimdValue};
 use num::{FromPrimitive, Signed, Zero};
 use simba::scalar::SubsetOf;
@@ -721,7 +721,7 @@ impl SubsetOf<BasedExpr> for f64 {
         element.round_to_f64(RoundingMode::Nearest)
     }
 
-    fn is_in_subset(element: &BasedExpr) -> bool {
+    fn is_in_subset(_: &BasedExpr) -> bool {
         true
     }
 }
@@ -739,7 +739,7 @@ impl SubsetOf<BasedExpr> for f32 {
         element.round_to_f64(RoundingMode::Nearest) as f32
     }
 
-    fn is_in_subset(element: &BasedExpr) -> bool {
+    fn is_in_subset(_: &BasedExpr) -> bool {
         true
     }
 }
@@ -949,7 +949,7 @@ impl ComplexField for BasedExpr {
 
     #[doc = r" Computes (self.conjugate() * self + other.conjugate() * other).sqrt()"]
     /// Currently fake function; do not call.
-    fn hypot(self, other: Self) -> Self::RealField {
+    fn hypot(self, _: Self) -> Self::RealField {
         unimplemented!("cannot take hypothenuse of field extension yet. Some cases will stay undefined.")
     }
 

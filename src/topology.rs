@@ -1,10 +1,10 @@
-use std::fmt::{write, Display};
+use std::fmt::{Display};
 
 use indexmap::IndexMap;
 use serde_json::Value;
 use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
-use crate::{filter, fold::{Edge, EdgesFaceCorners, EdgesFaceCornersEx, EdgesVertices, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdges, FacesHalfEdgesSlice, Frame, FrameAttribute, HalfEdge, Vertex, VerticesHalfEdges, VerticesHalfEdgesSlice}, ser_de::{SerDeFold, SerDeFrame}};
+use crate::{filter, fold::{Edge, EdgesFaceCorners, EdgesFaceCornersEx, EdgesVertices, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdges, FacesHalfEdgesSlice, Frame, FrameAttribute, HalfEdge, Vertex, VerticesHalfEdges, VerticesHalfEdgesSlice}, ser_de::{SerDeFrame}};
 use crate::fold::EdgesVerticesEx;
 
 /// Given `vertices_edges` and `edges_vertices` (defining edge endpoints),
@@ -718,14 +718,13 @@ impl Frame {
 
 #[cfg(test)]
 mod test {
-    use exact_number::{based_expr, rat::Rat};
+    use exact_number::{rat::Rat};
     use indexmap::IndexMap;
-    use nalgebra::DMatrix;
     use serde_json::json;
     use typed_index_collections::{ti_vec, TiVec};
     use vf2::{Direction, Graph};
 
-    use crate::{filter::{edges_vertices_incident, other_vertex}, ser_de::{SerDeFrame, SerDeRat}, topology::TopologyError};
+    use crate::{ser_de::{SerDeFrame, SerDeRat}, topology::TopologyError};
     use crate::fold::{Vertex as V, Edge as E, Face as F, HalfEdge as H, FaceCorner as C};
 
     #[test]
@@ -1699,9 +1698,6 @@ mod test {
 
     #[test]
     fn test_try_fh_to_ef() {
-        use TopologyError::*;
-        const SF: fn(usize) -> Option<F> = |f| Some(F(f));
-
         let edges_faces = super::try_fh_to_ec(&ti_vec![], 0);
         assert_eq!(edges_faces, Ok(ti_vec![]));
 

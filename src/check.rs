@@ -3,11 +3,9 @@
 
 use std::fmt::Display;
 
-use exact_number::{BasedExpr, Angle};
-use nalgebra::{DMatrix, DMatrixView, DVector};
-use typed_index_collections::TiSlice;
+use exact_number::{Angle};
 
-use crate::{fold::{Edge, EdgeAssignment, Fold, Frame, FrameAttribute}, manifold::{ManifoldError, OrientableError}};
+use crate::{fold::{Edge, EdgeAssignment, Frame, FrameAttribute}, manifold::{ManifoldError, OrientableError}};
 
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq, Eq, PartialOrd, Ord))] // Really no point in this derivation outside of tests

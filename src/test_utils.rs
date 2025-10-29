@@ -1,16 +1,15 @@
 #![cfg(test)]
 
-use indexmap::{indexset, indexmap};
-use serde_json::json;
-use typed_index_collections::{ti_vec, TiSlice, TiVec};
+use indexmap::{indexset};
+use typed_index_collections::{ti_vec};
 
-use crate::{fold::{AtFaceCorner, Edge, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesEx, EdgesVerticesSlice, Face, FaceCorner, FaceData, FacesHalfEdges, FacesHalfEdgesSlice, Frame, FrameAttribute, HalfEdge, Vertex, VerticesHalfEdges, VerticesHalfEdgesSlice}, topology};
+use crate::{fold::{AtFaceCorner, Edge, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesEx, EdgesVerticesSlice, FacesHalfEdges, FacesHalfEdgesSlice, Frame, FrameAttribute, HalfEdge, Vertex, VerticesHalfEdges, VerticesHalfEdgesSlice}, topology};
 
 pub(crate) fn assert_ec_fh_consistent(ec: &EdgesFaceCornersSlice, fh: &FacesHalfEdgesSlice) {
     let rip = || panic!("{ec:?} is not consistent with {fh:?}");
 
     let mut fh_unaccounted = fh.to_vec();
-    for (h, corners) in ec.half_iter_enumerated() {
+    for (_, corners) in ec.half_iter_enumerated() {
         for &c in corners.iter() {
             if let Some(h) = fh_unaccounted.try_at_mut(c) {
                 *h = HalfEdge(usize::MAX)
@@ -29,7 +28,7 @@ pub(crate) fn assert_vh_ev_consistent(vh: &VerticesHalfEdgesSlice, ev: &EdgesVer
     let rip = || panic!("{vh:?} is not consistent with {ev:?}");
 
     let mut ev_unaccounted = ev.to_vec();
-    for (v, half_edges) in vh.iter_enumerated() {
+    for half_edges in vh {
         for &h in half_edges.iter() {
             if let Some(v) = ev_unaccounted.try_at_mut(h) {
                 *v[0] = Vertex(usize::MAX)

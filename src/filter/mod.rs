@@ -1,12 +1,11 @@
 use std::{iter, mem};
 
 use exact_number::BasedExpr;
-use indexmap::{indexmap, map::Entry, IndexMap, IndexSet};
-use nalgebra::{Const, DMatrix, DMatrixView, DMatrixViewMut, DVector, Dyn, RawStorageMut, Scalar, U1};
-use serde_json::Value;
+use indexmap::{indexmap, map::Entry, IndexMap};
+use nalgebra::{DMatrix, DVector, Dyn, Scalar};
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, FacesCustom, FacesHalfEdges, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, EdgeDatas, FaceDatas, VertexDatas};
+use crate::{fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, EdgeDatas, FaceDatas, VertexDatas};
 
 pub mod intersect;
 
@@ -774,11 +773,9 @@ pub fn other_vertex(edge: [Vertex; 2], vertex: Vertex) -> Vertex {
 
 #[cfg(test)]
 mod test {
-    use core::f64;
-
     use exact_number::{based_expr, Angle};
-    use indexmap::{indexmap, indexset, IndexMap};
-    use nalgebra::{vector, DMatrix, DVector};
+    use indexmap::{indexmap, indexset};
+    use nalgebra::{DMatrix, DVector};
     use serde_json::json;
     use typed_index_collections::ti_vec;
 
@@ -972,8 +969,8 @@ mod test {
 
         let mut frame = two_panel.clone();
         // Still orientable, but since it needs a flip, the flag gets cleared.
-        let [h14, h15] = frame.add_edge_like(E(0), [V(2), V(0)]).split();
-        let [h16, h17] = frame.add_edge_like(E(0), [V(5), V(3)]).split();
+        let [h14, _h15] = frame.add_edge_like(E(0), [V(2), V(0)]).split();
+        let [_h16, h17] = frame.add_edge_like(E(0), [V(5), V(3)]).split();
         let index = frame.add_face(FaceData {
             half_edges: vec![H(5), h14, H(0), h17],
             custom: indexmap! { "test:test".to_owned() => json!(3) }
@@ -989,8 +986,8 @@ mod test {
 
         let mut frame = two_panel.clone();
         // Not orientable, but is still a manifold
-        let [h14, h15] = frame.add_edge_like(E(0), [V(2), V(3)]).split();
-        let [h16, h17] = frame.add_edge_like(E(0), [V(5), V(0)]).split();
+        let [h14, _h15] = frame.add_edge_like(E(0), [V(2), V(3)]).split();
+        let [_h16, h17] = frame.add_edge_like(E(0), [V(5), V(0)]).split();
         let index = frame.add_face(FaceData {
             half_edges: vec![H(5), h14, H(1), h17],
             custom: indexmap! { "test:test".to_owned() => json!(3) }

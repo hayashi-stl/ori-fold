@@ -166,9 +166,9 @@ impl Basis {
 
     /// # Panics
     /// Panics if proven to not be a basis.
-    pub(crate) fn new(basis: Vec<SqrtExpr>) -> Self {
-        Self::new_checked(basis).unwrap()
-    }
+    //pub(crate) fn new(basis: Vec<SqrtExpr>) -> Self {
+    //    Self::new_checked(basis).unwrap()
+    //}
 
     /// Creates a new internally stored basis.
     /// 
@@ -214,62 +214,6 @@ impl Eq for Basis {}
 pub struct ArcBasis(Arc<Basis>);
 
 impl ArcBasis {
-    pub(crate) fn into_unified(a: Option<Self>, b: Option<Self>) -> Option<Self> {
-        match (a, b) {
-            (None, None) => None,
-            (None, Some(basis)) => Some(basis),
-            (Some(basis), None) => Some(basis),
-            (Some(a), Some(b)) => 
-                if a == b {
-                    Some(a)
-                } else {
-                    panic!("Basis {:?} doesn't match basis {:?}", a, b)
-                }
-        }
-    }
-
-    pub(crate) fn into_unified_vr(a: Option<Self>, b: Option<&Self>) -> Option<Self> {
-        match (a, b) {
-            (None, None) => None,
-            (None, Some(basis)) => Some(basis.clone()),
-            (Some(basis), None) => Some(basis),
-            (Some(a), Some(b)) => 
-                if &a == b {
-                    Some(a)
-                } else {
-                    panic!("Basis {:?} doesn't match basis {:?}", a, b)
-                }
-        }
-    }
-
-    pub(crate) fn into_unified_rv(a: Option<&Self>, b: Option<Self>) -> Option<Self> {
-        match (a, b) {
-            (None, None) => None,
-            (None, Some(basis)) => Some(basis),
-            (Some(basis), None) => Some(basis.clone()),
-            (Some(a), Some(b)) => 
-                if a == &b {
-                    Some(b)
-                } else {
-                    panic!("Basis {:?} doesn't match basis {:?}", a, b)
-                }
-        }
-    }
-
-    pub(crate) fn to_unified<'a>(a: Option<&'a Self>, b: Option<&'a Self>) -> Option<&'a Self> {
-        match (a, b) {
-            (None, None) => None,
-            (None, Some(basis)) => Some(basis),
-            (Some(basis), None) => Some(basis),
-            (Some(a), Some(b)) => 
-                if a == b {
-                    Some(a)
-                } else {
-                    panic!("Basis {:?} doesn't match basis {:?}", a, b)
-                }
-        }
-    }
-
     pub(crate) fn assert_compatible(&self, other: &ArcBasis) -> () {
         assert_eq!(self, other)
     }

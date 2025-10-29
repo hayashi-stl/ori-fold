@@ -1,8 +1,8 @@
 use std::{cmp::Ordering, iter::Sum, mem, ops::{Mul, Neg, Sub}};
 
-use exact_number::{malachite::base::num::arithmetic::traits::{Sign, CheckedDiv}, rat::Rat, BasedExpr, Angle};
-use nalgebra::{allocator::Allocator, matrix, vector, Affine2, ArrayStorage, ClosedSubAssign, ComplexField, Const, DefaultAllocator, DimNameAdd, DimNameSum, Dyn, Matrix2, MatrixView2xX, RealField, SVector, Scalar, TAffine, ToTypenum, Transform, Vector, Vector2, VectorView, VectorView2, U1};
-use num_traits::{Num, NumAssign, NumAssignRef, NumRef, RefNum, Signed, Zero};
+use exact_number::{malachite::base::num::arithmetic::traits::{Sign}, BasedExpr, Angle};
+use nalgebra::{allocator::Allocator, matrix, vector, Affine2, ClosedSubAssign, Const, DefaultAllocator, DimNameAdd, DimNameSum, Dyn, Matrix2, MatrixView2xX, RealField, SVector, Scalar, TAffine, Transform, Vector2, VectorView, VectorView2, U1};
+use num_traits::{Num, NumAssign, NumAssignRef, NumRef, RefNum, Signed};
 
 pub type VectorView2Dyn<'s, T> = VectorView2<'s, T, U1, Dyn>;
 pub type MatrixView2Dyn<'s, T> = MatrixView2xX<'s, T, U1, Dyn>;
@@ -23,7 +23,7 @@ macro_rules! float_ord_impl {
     ($f:ident, $i:ident, $n:expr) => {
         impl FloatOrd<$f> {
             fn convert(self) -> $i {
-                let u = unsafe { std::mem::transmute::<$f, $i>(self.0) };
+                let u = self.0.to_bits();
                 let bit = 1 << ($n - 1);
                 if u & bit == 0 {
                     u | bit

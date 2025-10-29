@@ -30,10 +30,10 @@ impl<T: IntervalContent> Interval<T> {
         }
     }
 
-    fn with_invalid(mut self) -> Self {
-        self.maybe_invalid = true;
-        self
-    }
+    //fn with_invalid(mut self) -> Self {
+    //    self.maybe_invalid = true;
+    //    self
+    //}
 
     fn empty_if_overflowed(bounds: [T; 2]) -> Option<[T; 2]> {
         if T::overflowed(&bounds) { None } else { Some(bounds) }

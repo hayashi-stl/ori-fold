@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::{IndexSet};
 use typed_index_collections::{ti_vec, TiVec};
 
 use crate::fold::{AtFaceCorner, EdgesFaceCornersEx, Edge, Face, FaceCorner, Frame, FrameAttribute, HalfEdge, Vertex};
@@ -183,10 +183,10 @@ impl Frame {
         self.remove_attribute(FrameAttribute::NonManifold);
 
         // Welp; now to check it.
-        let (vh, ev, ef, fh) = if let (Some(vh), Some(ev), Some(ef), Some(fh)) =
-            (self.vertices_half_edges.as_mut(), self.edges_vertices.as_ref(), self.edges_face_corners.as_ref(), self.faces_half_edges.as_ref())
+        let (vh, ef) = if let (Some(vh), Some(ef)) =
+            (self.vertices_half_edges.as_mut(), self.edges_face_corners.as_ref())
         {
-            (vh, ev, ef, fh)
+            (vh, ef)
         } else {
             let fan_delimiters = if let Some(vh) = self.vertices_half_edges.as_ref() {
                 vh.iter().map(|hs| (0..=hs.len()).collect::<Vec<_>>()).collect::<TiVec<_, _>>()
@@ -332,14 +332,13 @@ impl Frame {
 #[cfg(test)]
 mod test {
     use indexmap::indexset;
-    use petgraph::{Graph, Undirected};
+    use petgraph::{Graph};
     use typed_index_collections::{ti_vec, TiSlice, TiVec};
 
-    use crate::fold::{EdgesVerticesEx, Frame, FrameAttribute};
-    use crate::fold::{Vertex as V, Edge as E, Face as F, HalfEdge as H, FaceCorner as C};
+    use crate::fold::{Frame, FrameAttribute};
+    use crate::fold::{Vertex as V, Edge as E, Face as F, HalfEdge as H};
     use crate::manifold::{ManifoldError, OrientableError};
     use crate::test_utils::assert_ec_fh_consistent;
-    use crate::topology::try_vh_to_ev;
 
     fn manifold_vh_graph(vh: &TiSlice<V, Vec<H>>, fan_delimiters: &TiSlice<V, Vec<usize>>) -> Graph<(V, H), ()> {
         let mut graph = Graph::new();
@@ -478,7 +477,7 @@ mod test {
         let manifold = Frame {
             ..Default::default()
         }.try_into_manifold();
-        let (manifold, fans) = manifold.unwrap();
+        let (manifold, _) = manifold.unwrap();
         assert_eq!(manifold.frame_attributes, indexset![FrameAttribute::Manifold]);
         assert_eq!(manifold.vertices_half_edges, None);
 
@@ -812,7 +811,7 @@ mod test {
         let orientable = Frame {
             ..Default::default()
         }.try_into_orientable();
-        let (orientable, fans) = orientable.unwrap();
+        let (orientable, _) = orientable.unwrap();
         assert_eq!(orientable.frame_attributes, indexset![FrameAttribute::Manifold, FrameAttribute::Orientable]);
         assert_eq!(orientable.vertices_half_edges, None);
  
