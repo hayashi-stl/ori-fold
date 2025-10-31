@@ -1,10 +1,12 @@
-use std::{cmp::{Ordering, Reverse}, collections::BinaryHeap, marker::PhantomData, mem, slice};
+use std::{cmp::{Ordering, Reverse}, collections::BinaryHeap, marker::PhantomData, mem, slice, hash::Hash};
 
 use exact_number::BasedExpr;
+use indexmap::IndexMap;
 use nalgebra::{vector, RawStorage, RealField, Vector2};
 use num_traits::{RefNum, Zero};
+use robust_geometry as robust;
 
-use crate::{filter::Coordinate, geom::{self, FloatOrd, LineIntersection, NumEx, SegmentIntersection, VectorView2Dyn}, Frame};
+use crate::{Edge, Frame, filter::Coordinate, geom::{self, FloatOrd, LineIntersection, NumEx, SegmentIntersection, VectorView2Dyn}};
 
 // Pseudocode for line sweep
 //
@@ -28,6 +30,13 @@ use crate::{filter::Coordinate, geom::{self, FloatOrd, LineIntersection, NumEx, 
 //     if SL_E is not empty
 //         robustly check intersection between end of SL_E and next in SL, and add Intersection event to PQ if there's one in the future
 // Now do it all again, but transform coordinates as (y + ιx, x) instead. (skip for exact coordinates)
+
+fn sort_segment(mut s: [Vector2<f64>; 2]) -> [Vector2<f64>; 2] {
+    if [FloatOrd(s[0].x), FloatOrd(s[0].y)] > [FloatOrd(s[1].x), FloatOrd(s[1].y)] {
+        s.swap(0, 1);
+    }
+    s
+}
 
 /// An `Option` with its comparison between Some and None reversed.
 /// Needed because vertical lines have the highest slope after the (x + εy, y) transform.
@@ -226,8 +235,14 @@ impl<E: Clone + Ord> Event for EventF64<E> {
     fn try_intersect<'a, F: FnMut(&Self::E) -> [VectorView2Dyn<'a, Self::N>; 2]>(
         segments: [Self::E; 2], mut mapping: F, time: <Self::N as IntersectCoordinate<Self::E>>::Time<'_>
     ) -> Option<Self::This<'a>> {
-        let lines = segments.clone().map(|s| mapping(&s)).map(|line| line.map(|p| p.into_owned()));
-        todo!(); // TODO: Robust predicate Orient2D
+        let mut lines = segments.clone().map(|s| mapping(&s)).map(|line| sort_segment(line.map(|p| p.into_owned())));
+        if robust::cross_2d(lines[1][0], lines[1][1], lines[0][0], lines[0][1]) < 0.0 {
+            lines.swap(0, 1); // sort segments clockwise
+        }
+        if robust::orient_2d(lines[1][0], lines[1][1], lines[0][0]) >= 0.0 ||
+            robust::orient_2d(lines[1][0], lines[1][1], lines[0][1]) <= 0.0 {
+            return None; // does not intersect
+        }
         if TimeF64::Intersect(lines) > time {
             Some(Self::Intersect(lines, segments))
         } else { None }
@@ -344,6 +359,8 @@ impl<'a> Time for &'a [BasedExpr; 2] {
     }
 }
 
+/// For Intersect, stores left point before right point,
+/// and stores segments in clockwise order
 #[derive(Clone, Copy, Debug)]
 pub enum TimeF64 {
     Point(Vector2<f64>),
@@ -368,13 +385,18 @@ impl Ord for TimeF64 {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Self::Point(p1), Self::Point(p2)) => [FloatOrd(p1.x), FloatOrd(p1.y)].cmp(&[FloatOrd(p2.x), FloatOrd(p2.y)]),
-            (Self::Point(p1), Self::Intersect(segs2)) => todo!(), // TODO: Simple intersection comparison
+            (Self::Point(p1), Self::Intersect(ss)) =>
+                FloatOrd(robust::simple_intersect_compare_i(*p1, ss[0][0], ss[0][1], ss[1][0], ss[1][1], 0)).cmp(&FloatOrd(0.0)).then_with(||
+                FloatOrd(robust::simple_intersect_compare_i(*p1, ss[0][0], ss[0][1], ss[1][0], ss[1][1], 1)).cmp(&FloatOrd(0.0))),
             (Self::Intersect(_), Self::Point(_)) => other.cmp(self).reverse(),
-            (Self::Intersect(segs1), Self::Intersect(segs2)) => todo!(), // TODO: Complicated intersection comparison
+            (Self::Intersect(x1), Self::Intersect(x2)) =>
+                FloatOrd(robust::complex_intersect_compare_i(x1[0][0], x1[0][1], x1[1][0], x1[1][1], x2[0][0], x2[0][1], x2[1][0], x2[1][1], 0)).cmp(&FloatOrd(0.0)).then_with(||
+                FloatOrd(robust::complex_intersect_compare_i(x1[0][0], x1[0][1], x1[1][0], x1[1][1], x2[0][0], x2[0][1], x2[1][0], x2[1][1], 1)).cmp(&FloatOrd(0.0)))
         }
     }
 }
 
+/// Stores left point before right point
 #[derive(Clone, Copy, Debug)]
 pub struct PosF64([Vector2<f64>; 2], TimeF64);
 
@@ -395,16 +417,30 @@ impl PartialOrd for PosF64 {
 impl Ord for PosF64 {
     fn cmp(&self, other: &Self) -> Ordering {
         debug_assert_eq!(self.1, other.1); // never compare positions across different times
+        //println!("Comparing positions");
+        //crate::my_dbg!(inline &self);
+        //crate::my_dbg!(inline other);
         // note: self.1 is always the current time,
-        // so we can just use the simple and complicated intersection comparisons without having to 
-        // worry about separating x from y
+        // so we don't have to worry about vertical comparison
+        let (s1, s2) = (self.0, other.0);
+        let orient = robust::cross_2d(s2[0], s2[1], s1[0], s1[1]);
+        //crate::my_dbg!(inline orient);
+        if orient == 0.0 {
+            return FloatOrd(robust::orient_2d(s2[0], s2[1], s1[0])).cmp(&FloatOrd(0.0))
+        }
+        //if orient < 0.0 { mem::swap(&mut s1, &mut s2) } (turns out you need to do both this *and* flip the result, which cancel out)
         match &self.1 {
-            TimeF64::Point(p) => todo!(), // TODO: simple intersection comparison
-            TimeF64::Intersect(segs) => todo!(), // TODO: complicated intersection comparison
+            TimeF64::Point(p) =>
+                FloatOrd(robust::simple_intersect_compare_i(*p, s1[0], s1[1], s2[0], s2[1], 0)).cmp(&FloatOrd(0.0)).then_with(||
+                FloatOrd(robust::simple_intersect_compare_i(*p, s1[0], s1[1], s2[0], s2[1], 1)).cmp(&FloatOrd(0.0))),
+            TimeF64::Intersect(ss) =>
+                FloatOrd(robust::complex_intersect_compare_i(ss[0][0], ss[0][1], ss[1][0], ss[1][1], s1[0], s1[1], s2[0], s2[1], 0)).cmp(&FloatOrd(0.0)).then_with(||
+                FloatOrd(robust::complex_intersect_compare_i(ss[0][0], ss[0][1], ss[1][0], ss[1][1], s1[0], s1[1], s2[0], s2[1], 1)).cmp(&FloatOrd(0.0))),
         }
     }
 }
 
+/// Stores left point before right point
 #[derive(Clone, Copy, Debug)]
 pub struct AngleF64([Vector2<f64>; 2]);
 
@@ -424,8 +460,8 @@ impl PartialOrd for AngleF64 {
 
 impl Ord for AngleF64 {
     fn cmp(&self, other: &Self) -> Ordering {
-        // TODO: Orient2D
-        todo!()
+        let orient = robust::cross_2d(other.0[0], other.0[1], self.0[0], self.0[1]);
+        FloatOrd(orient).cmp(&FloatOrd(0.0))
     }
 }
 
@@ -439,6 +475,13 @@ pub trait IntersectCoordinate<E>: NumEx + RealField {
     fn pos<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mapping: F, time: Self::Time<'_>) -> Self::Pos;
     /// The angle of `segment`, pointing right of the sweep line
     fn angle<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mapping: F) -> Self::Angle;
+    
+    /// Finds the splits between a bunch of segments in a way that's robust to perturbances
+    fn intersect_all_segments_ref<'a,
+        F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
+    >(edges: impl IntoIterator<Item = E>, mapping: F, epsilon: &Self) -> Vec<(E, Vector2<Self>)> where
+        E: Clone + Hash + 'a,
+        for<'b> &'b Self: RefNum<Self>;
 }
 
 impl<E: Ord + Clone> IntersectCoordinate<E> for f64 {
@@ -448,16 +491,52 @@ impl<E: Ord + Clone> IntersectCoordinate<E> for f64 {
     type Angle = AngleF64;
 
     fn pos<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F, time: Self::Time<'_>) -> Self::Pos {
-        let points = mapping(segment);
-        PosF64(points.map(|p| p.into_owned()), time)
+        let points = sort_segment(mapping(segment).map(|p| p.into_owned()));
+        PosF64(points, time)
     }
 
     fn angle<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F) -> Self::Angle {
-        let [mut p0, mut p1] = mapping(segment);
-        if [FloatOrd(p0.x), FloatOrd(p0.y)] > [FloatOrd(p1.x), FloatOrd(p1.y)] {
-            mem::swap(&mut p0, &mut p1);
-        }
-        AngleF64([p0.into_owned(), p1.into_owned()])
+        let seg = sort_segment(mapping(segment).map(|p| p.into_owned()));
+        AngleF64(seg)
+    }
+
+    /// The tricky one.
+    /// We add perpendicular serifs of length sqrt(2) * `epsilon` to each end of each segment,
+    /// then extend each main segment (not the serifs) by sqrt(1/2) * `epsilon` on each side.
+    /// Then, we remove all the serif splits.
+    /// This could give erroneous splits; it is the job of the caller to merge splits close to each other.
+    fn intersect_all_segments_ref<'a,
+            F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
+        >(edges: impl IntoIterator<Item = E>, mapping: F, epsilon: &Self) -> Vec<(E, Vector2<Self>)> where
+            E: Clone + Hash + 'a,
+            for<'b> &'b Self: RefNum<Self>
+    {
+        let edges = edges.into_iter().collect::<Vec<_>>();
+        let serifs = edges.iter().map(|e| {
+            let [p0, p1] = mapping(e);
+            let diff = p1 - p0;
+            let len = diff.norm();
+            // also avoid dividing by really tiny numbers, like, idk, 5e-324.
+            let unit = if len <= *epsilon { Vector2::zeros() } else { diff * *epsilon * (0.5f64).sqrt() / len };
+            let perp = geom::perp_ccw(unit);
+            (e.clone(), [p0 - perp, p0 - unit, p0 + perp, p1 + perp, p1 + unit, p1 - perp])
+        }).collect::<IndexMap<_, _>>();
+
+        let splits = intersect_all_segments_ref(
+            edges.into_iter().flat_map(|e| (0..7).map(move |i| (e.clone(), i))),
+            |(e, i)| {
+                match i {
+                    0 => mapping(e),
+                    1..4 => [mapping(e)[0], serifs[e][i - 1].as_view()],
+                    4..7 => [mapping(e)[1], serifs[e][i - 1].as_view()],
+                    _ => unreachable!()
+                }
+            }
+        );
+        splits.into_iter()
+            .filter(|((_, i), _) | *i == 0)
+            .map(|((e, _), intersection)| (e, intersection))
+            .collect()
     }
 }
 
@@ -487,6 +566,15 @@ impl<E: Ord + Clone> IntersectCoordinate<E> for BasedExpr {
             ReverseOption::Some(((&p1.y - &p0.y) / denom).into())
         }
     }
+
+    fn intersect_all_segments_ref<'a,
+            F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
+        >(edges: impl IntoIterator<Item = E>, mapping: F, _epsilon: &Self) -> Vec<(E, Vector2<Self>)> where
+            E: Clone + Hash + 'a,
+            for<'b> &'b Self: RefNum<Self>
+    {
+        intersect_all_segments_ref(edges, mapping)
+    }
 }
 
 pub fn intersect_all_segments_ref<'a,
@@ -509,6 +597,7 @@ pub fn intersect_all_segments_ref<'a,
     }
 
     while let Some(Reverse(event)) = events.pop() {
+        //println!("");
         // get all events happening at the same time
         let mut curr_events = vec![event];
         loop {
@@ -522,9 +611,9 @@ pub fn intersect_all_segments_ref<'a,
         // This is guaranteed to get all the segments with events that happen at `time`,
         // as well as yoink segments that need to be yoinked according to the pseudocode
         let (mut curr_segments, insert_pos) = segments.separate_all_with_same_pos(segment, time.clone());
+        //crate::my_dbg!(inline &time);
 
         // Remove all segments with End events
-        //println!("");
         //crate::my_dbg!(inline time.clone().actual_pos());
         for event in &curr_events {
             //crate::my_dbg!(inline event);
@@ -532,6 +621,11 @@ pub fn intersect_all_segments_ref<'a,
                 curr_segments.remove(s);
             }
         }
+
+        //println!("Current segments");
+        //for s in curr_segments.segments() {
+        //    crate::my_dbg!(inline s);
+        //}
 
         // Reverse & split the rest
         curr_segments.reverse();
@@ -559,6 +653,7 @@ pub fn intersect_all_segments_ref<'a,
                 .map(|ev| events.push(Reverse(ev)));
         }
 
+        //println!("All segments");
         //for s in segments.segments() {
         //    crate::my_dbg!(inline s);
         //}
@@ -570,7 +665,7 @@ pub fn intersect_all_segments_ref<'a,
 impl Frame {
     /// Adds vertices at all points of intersections between the edges of `self`.
     /// 
-    /// This requires coordinates to be 2D, and will remove all face information. Beware. 
+    /// This requires coordinates to be 2D and edge data to exist and will remove all face information. Beware. 
     /// 
     /// In particular:
     /// * Duplicate edges are merged. Even ones that showed up during processing.
@@ -579,7 +674,17 @@ impl Frame {
     ///     wherever it intersects a boundary point of the other edge. Then duplicate edges are merged.
     /// * If an edge intersects a boundary point of another edge, the first edge is split at that boundary point.
     /// * If two non-collinear edges intersect in their interiors, they're both split at the point of intersection.
-    pub fn intersect_all_edges_generic<T: NumEx + Coordinate>(&mut self) {
+    pub fn intersect_all_edges_generic<T: NumEx + Coordinate + IntersectCoordinate<Edge>>(&mut self, epsilon: &T) where
+        for<'a> &'a T: RefNum<T>
+    {
+        let vertices_coords = T::vertices_coords(self).as_ref().unwrap(); // required by spec
+        assert_eq!(vertices_coords.nrows(), 2, "intersect_all_edges requires 2D coordinates");
+        let edges_vertices = self.edges_vertices.as_ref().unwrap(); // required by spec
+        let splits = T::intersect_all_segments_ref(
+            (0..edges_vertices.len()).map(Edge),
+            |&e| edges_vertices[e].map(|v| vertices_coords.fixed_view::<2, 1>(0, v.0)),
+            epsilon
+        );
     }
 }
 
@@ -785,6 +890,50 @@ mod test {
     }
 
     #[test]
+    fn test_intersect_all_segments_segment_touches_cove() {
+        let vectors = vec![
+            exact_vec_2![(0), (0)],
+            exact_vec_2![(1), (1)],
+            exact_vec_2![(0), (1)],
+            exact_vec_2![(1), (0)],
+            exact_vec_2![(1/2), (1/2)],
+            exact_vec_2![(-1), (1/2)],
+            exact_vec_2![(3), (0)],
+            exact_vec_2![(4), (1)],
+            exact_vec_2![(3), (1)],
+            exact_vec_2![(4), (0)],
+            exact_vec_2![(7/2), (1/2)],
+            exact_vec_2![(10), (1/2)],
+        ];
+        let segments = vec![
+            [0, 1],
+            [2, 3],
+            [4, 5], // this segment touches the cove created by segments 0 and 1
+            [6, 7],
+            [8, 9],
+            [10, 11],
+        ];
+        let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
+            |s| segments[*s].map(|v| vectors[v].as_view())));
+        assert_eq!(splits, vec![
+            (0, exact_vec_2![(1/2), (1/2)]),
+            (1, exact_vec_2![(1/2), (1/2)]),
+            (3, exact_vec_2![(7/2), (1/2)]),
+            (4, exact_vec_2![(7/2), (1/2)]),
+        ]);
+
+        let vectors = round_vectors(vectors);
+        let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
+            |s| segments[*s].map(|v| vectors[v].as_view())));
+        assert_eq!(splits, vec![
+            (0, vector![0.5, 0.5]),
+            (1, vector![0.5, 0.5]),
+            (3, vector![3.5, 0.5]),
+            (4, vector![3.5, 0.5]),
+        ]);
+    }
+
+    #[test]
     fn test_intersect_all_segments_coplanar() {
         let vectors = vec![
             exact_vec_2![(0), (0)],
@@ -839,7 +988,7 @@ mod test {
             vector![7.0, 6.0],
             vector![-13.0, -11.0],
             vector![123456789.0, 987654321.0],
-            vector![-246713577.0, -1975308641.0],
+            vector![-246913577.0, -1975308641.0],
         ];
         // All the segments intersect at (1/3, 1/3),
         // which can't be represented as an f64.
@@ -858,6 +1007,38 @@ mod test {
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
             |s| segments[*s].map(|v| vectors[v].as_view())));
         assert_eq!(splits.len(), segments.len());
+    }
+
+    #[test]
+    fn test_intersect_all_segments_small_grid() {
+        let exact = |i: usize| BasedExpr::with_rational_basis(i.into());
+        let size = 2;
+        let vectors = (0..=size)
+            .flat_map(|i| [vector![exact(0), exact(i)], vector![exact(size), exact(i)]])
+            .chain((0..=size).flat_map( |i| [vector![exact(i), exact(0)], vector![exact(i), exact(size)]]))
+            .collect::<Vec<_>>();
+        let segments = (0..=size).map(|i| [2 * i, 2 * i + 1])
+            .chain((0..=size).map(|i| [2 * (size + 1 + i), 2 * (size + 1 + i) + 1]))
+            .collect::<Vec<_>>();
+        let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
+            |s| segments[*s].map(|v| vectors[v].as_view())));
+        let expected = canonicalize_exact((0..=size).flat_map(|y| (0..=size).flat_map(move |x| {
+            let mut result = vec![];
+            if x > 0 && x < size {
+                result.push((y, vector![exact(x), exact(y)]));
+            }
+            if y > 0 && y < size {
+                result.push((size + 1 + x, vector![exact(x), exact(y)]))
+            }
+            result
+        })).collect::<Vec<_>>());
+        assert_eq!(splits, expected);
+
+        let vectors = round_vectors(vectors);
+        let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
+            |s| segments[*s].map(|v| vectors[v].as_view())));
+        let expected = round_splits(expected);
+        assert_eq!(splits, expected);
     }
 
     #[test]

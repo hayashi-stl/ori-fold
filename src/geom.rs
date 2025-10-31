@@ -28,7 +28,8 @@ macro_rules! float_ord_impl {
                 if u & bit == 0 {
                     u | bit
                 } else {
-                    !u
+                    // Make sure that 0 == -0
+                    if u == bit { u } else { !u }
                 }
             }
         }

@@ -8,6 +8,7 @@ use typed_index_collections::{ti_vec, TiVec};
 use crate::{fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, EdgeDatas, FaceDatas, VertexDatas};
 
 pub mod intersect;
+pub mod split_merge;
 
 #[derive(Clone, Copy)]
 struct SwapRemove;
