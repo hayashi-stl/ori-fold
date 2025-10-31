@@ -71,6 +71,12 @@ impl Frame {
 
         (new_v, new_e)
     }
+
+    pub fn split_edges<T: NumEx + Coordinate>(&mut self, splits: impl Iterator<Item = (Edge, DVector<T>)>) {
+        // Need to sort them by edge, then backwards by parameter along edge
+        let ev = self.edges_vertices.as_ref().unwrap(); // needs to exist to split edges
+        let splits = splits.into_iter().collect::<Vec<_>>();
+    }
 }
 
 #[cfg(test)]
