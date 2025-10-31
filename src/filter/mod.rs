@@ -5,7 +5,7 @@ use indexmap::{indexmap, map::Entry, IndexMap};
 use nalgebra::{DMatrix, DVector, Dyn, Scalar};
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, EdgeDatas, FaceDatas, VertexDatas};
+use crate::{EdgeDatas, FaceDatas, VertexDatas, filter::intersect::IntersectCoordinate, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}};
 
 pub mod intersect;
 pub mod split_merge;
@@ -62,7 +62,7 @@ impl RemoveStrategy for ShiftRemove {
     }
 }
 
-pub trait Coordinate: Sized {
+pub trait Coordinate: Sized + IntersectCoordinate {
     fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>>;
     fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>>;
 }
@@ -75,6 +75,17 @@ impl Coordinate for f64 {
 impl Coordinate for BasedExpr {
     fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_exact }
     fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_exact }
+}
+
+/// Sets a column without cloning.
+fn set_column<T: Scalar>(mtx: &mut DMatrix<T>, index: usize, col: DVector<T>) {
+    let dims = col.nrows();
+    if col.nrows() != mtx.nrows() {
+        panic!("dimension mismatch: tried to set a {}D entry in a {}D vector array", col.nrows(), mtx.nrows())
+    }
+    let slice = mtx.column_mut(index).data.into_slice_mut();
+    let mut col: Vec<T> = col.data.into();
+    slice.swap_with_slice(&mut col);
 }
 
 fn insert_column<T: Scalar>(mtx: &mut DMatrix<T>, col: DVector<T>) {
@@ -240,23 +251,30 @@ impl Frame {
         }
     }
 
-    /// Adds a vertex with the same data as the vertex given.
+    /// Adds a vertex with the same data as the vertex given,
+    /// except at position `at`.
+    /// If vertex coordinates with type `T` do not exist, `at` gets ignored.
     /// 
     /// Note that `vertex_data.half_edges` gets ignored.
-    pub fn add_vertex_like(&mut self, like: Vertex) -> Vertex {
+    pub fn add_vertex_like<T: Coordinate>(&mut self, like: Vertex, at: DVector<T>) -> Vertex {
         let data = self.vertex_data(like);
-        self.add_vertex(data)
+        let v = self.add_vertex(data);
+        T::vertices_coords_mut(self).as_mut().map(|vc| set_column(vc, v.0, at));
+        v
     }
 
     /// Adds an edge given some edge data and returns its index
     /// without checking whether it preserves the frame attributes.
+    /// If `fix_vertices_half_edges` is false, then `vertices_half_edges` is left unmodified.
     /// See [`add_edge`](Frame::add_edge) for further documentation.
-    pub fn add_edge_unchecked(&mut self, mut edge_data: EdgeData) -> Edge {
+    pub fn add_edge_unchecked(&mut self, mut edge_data: EdgeData, fix_vertices_half_edges: bool) -> Edge {
         let index = Edge(self.edges_vertices.as_ref().unwrap().len());
 
         self.edges_vertices.as_mut().unwrap().push(edge_data.vertices);
-        self.vertices_half_edges.as_mut().unwrap()[edge_data.vertices[0]].push(HalfEdge::new(index, false));
-        self.vertices_half_edges.as_mut().unwrap()[edge_data.vertices[1]].push(HalfEdge::new(index, true));
+        if fix_vertices_half_edges {
+            self.vertices_half_edges.as_mut().unwrap()[edge_data.vertices[0]].push(HalfEdge::new(index, false));
+            self.vertices_half_edges.as_mut().unwrap()[edge_data.vertices[1]].push(HalfEdge::new(index, true));
+        }
         self.edges_face_corners.as_mut().map(|vec| vec.push([vec![], vec![]]));
         self.edges_assignment.as_mut().map(|vec| vec.push(edge_data.assignment.unwrap()));
         self.edges_fold_angle_f64.as_mut().map(|vec| vec.push(edge_data.fold_angle_f64.unwrap()));
@@ -291,7 +309,9 @@ impl Frame {
 
     /// Adds an edge given some edge data and returns its index.
     /// 
-    /// If the mesh is no longer a manifold, then [`Manifold`](FrameAttribute::Manifold) is cleared.
+    /// * If the edge is a [`Cut`](EdgeAssignment::Cut) then [`NoCuts`](FrameAttribute::NoCuts) is cleared.
+    /// * If the edge is a [`Join`](EdgeAssignment::Join) then [`NoJoins`](FrameAttribute::NoJoins) is cleared.
+    /// * If the mesh is no longer a manifold, then [`Manifold`](FrameAttribute::Manifold) is cleared.
     /// 
     /// All fields that exists in this frame must have their respective field specified
     /// in `edge_data`
@@ -318,7 +338,7 @@ impl Frame {
                 }
             }
         }
-        self.add_edge_unchecked(edge_data)
+        self.add_edge_unchecked(edge_data, true)
     }
 
     /// Adds multiple edges given some edge data and returns the index of the first edge.

@@ -59,7 +59,7 @@ struct SegmentSearchRef<E, T, F> {
 
 impl<'a, E, T, F> SegmentSearchRef<E, T, F> where
     E: Eq + Clone,
-    T: IntersectCoordinate<E>,
+    T: IntersectCoordinate,
     F: Fn(&E) -> [VectorView2Dyn<'a, T>; 2] + Clone,
     for<'b> &'b T: RefNum<T>
 {
@@ -94,8 +94,8 @@ impl<'a, E, T, F> SegmentSearchRef<E, T, F> where
     }
 
     /// In the result, all the segments are tied for position at `time`
-    fn separate_all_with_same_pos(&mut self, s: &E, time: <T as IntersectCoordinate<E>>::Time<'_>) -> (Self, usize) {
-        let key = T::pos(&s, self.mapping.clone(), time.clone());
+    fn separate_all_with_same_pos(&mut self, s: &E, time: <T as IntersectCoordinate>::Time<'_>) -> (Self, usize) {
+        let key = T::pos(s, self.mapping.clone(), time.clone());
         match self.segments.binary_search_by_key(&key, |seg| T::pos(seg, self.mapping.clone(), time.clone())) {
             Ok(pos) => {
                 let mut lower_bound = pos;
@@ -153,21 +153,21 @@ pub enum EventF64<E> {
     Intersect([[Vector2<f64>; 2]; 2], [E; 2]),
 }
 
-impl<E: Clone + Ord> PartialEq for EventF64<E> {
+impl<E: Clone + Eq> PartialEq for EventF64<E> {
     fn eq(&self, other: &Self) -> bool {
         self.time() == other.time()
     }
 }
 
-impl<E: Clone + Ord> Eq for EventF64<E> {}
+impl<E: Clone + Eq> Eq for EventF64<E> {}
 
-impl<E: Clone + Ord> PartialOrd for EventF64<E> {
+impl<E: Clone + Eq> PartialOrd for EventF64<E> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<E: Clone + Ord> Ord for EventF64<E> {
+impl<E: Clone + Eq> Ord for EventF64<E> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.time().cmp(&other.time())
     }
@@ -179,21 +179,21 @@ pub enum EventExact<'a, E> {
     Intersect(Vector2<BasedExpr>, [E; 2]),
 }
 
-impl<'a, E: Clone + Ord> PartialEq for EventExact<'a, E> {
+impl<'a, E: Clone + Eq> PartialEq for EventExact<'a, E> {
     fn eq(&self, other: &Self) -> bool {
         self.time() == other.time()
     }
 }
 
-impl<'a, E: Clone + Ord> Eq for EventExact<'a, E> {}
+impl<'a, E: Clone + Eq> Eq for EventExact<'a, E> {}
 
-impl<'a, E: Clone + Ord> PartialOrd for EventExact<'a, E> {
+impl<'a, E: Clone + Eq> PartialOrd for EventExact<'a, E> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a, E: Clone + Ord> Ord for EventExact<'a, E> {
+impl<'a, E: Clone + Eq> Ord for EventExact<'a, E> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.time().cmp(other.time())
     }
@@ -201,20 +201,20 @@ impl<'a, E: Clone + Ord> Ord for EventExact<'a, E> {
 
 pub trait Event: Sized {
     type This<'a>: Ord + Event<E = Self::E, N = Self::N>;
-    type E: Clone + Ord;
-    type N: IntersectCoordinate<Self::E>;
+    type E: Clone + Eq;
+    type N: IntersectCoordinate;
 
     fn try_start_end<'a, F: FnMut(&Self::E) -> [VectorView2Dyn<'a, Self::N>; 2]>(segment: Self::E, mapping: F) -> Option<[Self::This<'a>; 2]>;
     /// Fails if there's no intersection or it's in the past/present
     fn try_intersect<'a, F: FnMut(&Self::E) -> [VectorView2Dyn<'a, Self::N>; 2]>
-        (segments: [Self::E; 2], mapping: F, time: <Self::N as IntersectCoordinate<Self::E>>::Time<'_>) -> Option<Self::This<'a>>;
+        (segments: [Self::E; 2], mapping: F, time: <Self::N as IntersectCoordinate>::Time<'_>) -> Option<Self::This<'a>>;
     fn involved_segments(&self) -> &[Self::E];
-    fn time<'a>(&'a self) -> <Self::N as IntersectCoordinate<Self::E>>::Time<'a>;
+    fn time<'a>(&'a self) -> <Self::N as IntersectCoordinate>::Time<'a>;
     fn segment_if_end(&self) -> Option<&Self::E>;
     fn segment_if_start(&self) -> Option<&Self::E>;
 }
 
-impl<E: Clone + Ord> Event for EventF64<E> {
+impl<E: Clone + Eq> Event for EventF64<E> {
     type This<'a> = Self;
     type E = E;
     type N = f64;
@@ -233,7 +233,7 @@ impl<E: Clone + Ord> Event for EventF64<E> {
     }
 
     fn try_intersect<'a, F: FnMut(&Self::E) -> [VectorView2Dyn<'a, Self::N>; 2]>(
-        segments: [Self::E; 2], mut mapping: F, time: <Self::N as IntersectCoordinate<Self::E>>::Time<'_>
+        segments: [Self::E; 2], mut mapping: F, time: <Self::N as IntersectCoordinate>::Time<'_>
     ) -> Option<Self::This<'a>> {
         let mut lines = segments.clone().map(|s| mapping(&s)).map(|line| sort_segment(line.map(|p| p.into_owned())));
         if robust::cross_2d(lines[1][0], lines[1][1], lines[0][0], lines[0][1]) < 0.0 {
@@ -255,7 +255,7 @@ impl<E: Clone + Ord> Event for EventF64<E> {
         }
     }
 
-    fn time<'a>(&'a self) -> <Self::N as IntersectCoordinate<Self::E>>::Time<'a> {
+    fn time<'a>(&'a self) -> <Self::N as IntersectCoordinate>::Time<'a> {
         match self {
             Self::Endpoint(t , _, _) => TimeF64::Point(*t),
             Self::Intersect(t, _) => TimeF64::Intersect(*t)
@@ -271,7 +271,7 @@ impl<E: Clone + Ord> Event for EventF64<E> {
     }
 }
 
-impl<'b, E: Clone + Ord> Event for EventExact<'b, E> {
+impl<'b, E: Clone + Eq> Event for EventExact<'b, E> {
     type This<'a> = EventExact<'a, E>;
     type E = E;
     type N = BasedExpr;
@@ -289,7 +289,7 @@ impl<'b, E: Clone + Ord> Event for EventExact<'b, E> {
     }
 
     fn try_intersect<'a, F: FnMut(&Self::E) -> [VectorView2Dyn<'a, Self::N>; 2]>(
-        segments: [Self::E; 2], mut mapping: F, time: <Self::N as IntersectCoordinate<Self::E>>::Time<'_>
+        segments: [Self::E; 2], mut mapping: F, time: <Self::N as IntersectCoordinate>::Time<'_>
     ) -> Option<Self::This<'a>> {
         let [line_a, line_b] = segments.clone().map(|s| mapping(&s));
         if let SegmentIntersection::Intersection(point) = geom::segment_intersect(line_a, line_b) {
@@ -306,7 +306,7 @@ impl<'b, E: Clone + Ord> Event for EventExact<'b, E> {
         }
     }
 
-    fn time<'a>(&'a self) -> <Self::N as IntersectCoordinate<Self::E>>::Time<'a> {
+    fn time<'a>(&'a self) -> <Self::N as IntersectCoordinate>::Time<'a> {
         match self {
             // Safety: VectorView2Dyn is a length-2 column vector with a row stride of 1,
             // so there are indeed 2 elements and they are indeed contiguous.
@@ -465,37 +465,37 @@ impl Ord for AngleF64 {
     }
 }
 
-pub trait IntersectCoordinate<E>: NumEx + RealField {
-    type Event<'a>: Ord + Event<E = E, N = Self>;
+pub trait IntersectCoordinate: NumEx + RealField {
+    type Event<'a, E: Eq + Clone>: Ord + Event<E = E, N = Self>;
     type Pos: Ord;
     type Time<'a>: Time<N = Self>;
     type Angle: Ord;
 
     /// The position of `segment` where the sweep line is at `curr_pos`
-    fn pos<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mapping: F, time: Self::Time<'_>) -> Self::Pos;
+    fn pos<'a, E: Eq + Clone, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mapping: F, time: Self::Time<'_>) -> Self::Pos;
     /// The angle of `segment`, pointing right of the sweep line
-    fn angle<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mapping: F) -> Self::Angle;
+    fn angle<'a, E: Eq + Clone, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mapping: F) -> Self::Angle;
     
     /// Finds the splits between a bunch of segments in a way that's robust to perturbances
     fn intersect_all_segments_ref<'a,
+        E: Eq + Clone + Hash + 'a,
         F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
     >(edges: impl IntoIterator<Item = E>, mapping: F, epsilon: &Self) -> Vec<(E, Vector2<Self>)> where
-        E: Clone + Hash + 'a,
         for<'b> &'b Self: RefNum<Self>;
 }
 
-impl<E: Ord + Clone> IntersectCoordinate<E> for f64 {
-    type Event<'a> = EventF64<E>;
+impl IntersectCoordinate for f64 {
+    type Event<'a, E: Eq + Clone> = EventF64<E>;
     type Pos = PosF64;
     type Time<'a> = TimeF64;
     type Angle = AngleF64;
 
-    fn pos<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F, time: Self::Time<'_>) -> Self::Pos {
+    fn pos<'a, E: Eq + Clone, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F, time: Self::Time<'_>) -> Self::Pos {
         let points = sort_segment(mapping(segment).map(|p| p.into_owned()));
         PosF64(points, time)
     }
 
-    fn angle<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F) -> Self::Angle {
+    fn angle<'a, E: Eq + Clone, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F) -> Self::Angle {
         let seg = sort_segment(mapping(segment).map(|p| p.into_owned()));
         AngleF64(seg)
     }
@@ -506,9 +506,9 @@ impl<E: Ord + Clone> IntersectCoordinate<E> for f64 {
     /// Then, we remove all the serif splits.
     /// This could give erroneous splits; it is the job of the caller to merge splits close to each other.
     fn intersect_all_segments_ref<'a,
+            E: Eq + Clone + Hash + 'a,
             F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
         >(edges: impl IntoIterator<Item = E>, mapping: F, epsilon: &Self) -> Vec<(E, Vector2<Self>)> where
-            E: Clone + Hash + 'a,
             for<'b> &'b Self: RefNum<Self>
     {
         let edges = edges.into_iter().collect::<Vec<_>>();
@@ -540,13 +540,13 @@ impl<E: Ord + Clone> IntersectCoordinate<E> for f64 {
     }
 }
 
-impl<E: Ord + Clone> IntersectCoordinate<E> for BasedExpr {
-    type Event<'a> = EventExact<'a, E>;
+impl IntersectCoordinate for BasedExpr {
+    type Event<'a, E: Eq + Clone> = EventExact<'a, E>;
     type Pos = [BasedExpr; 2];
     type Time<'a> = &'a [BasedExpr; 2];
     type Angle = ReverseOption<BasedExpr>;
 
-    fn pos<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F, time: Self::Time<'_>) -> Self::Pos {
+    fn pos<'a, E: Eq + Clone, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F, time: Self::Time<'_>) -> Self::Pos {
         let [p0, p1] = mapping(segment);
         let [[x, y]] = if p0.x == p1.x {
             vector![time[0].clone(), time[1].clone()]
@@ -557,7 +557,7 @@ impl<E: Ord + Clone> IntersectCoordinate<E> for BasedExpr {
         [x.into(), y.into()]
     }
 
-    fn angle<'a, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F) -> Self::Angle {
+    fn angle<'a, E: Eq + Clone, F: FnMut(&E) -> [VectorView2Dyn<'a, Self>; 2]>(segment: &E, mut mapping: F) -> Self::Angle {
         let [p0, p1] = mapping(segment);
         let denom = &p1.x - &p0.x;
         if denom.is_zero() {
@@ -568,9 +568,9 @@ impl<E: Ord + Clone> IntersectCoordinate<E> for BasedExpr {
     }
 
     fn intersect_all_segments_ref<'a,
+            E: Eq + Clone + Hash + 'a,
             F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
         >(edges: impl IntoIterator<Item = E>, mapping: F, _epsilon: &Self) -> Vec<(E, Vector2<Self>)> where
-            E: Clone + Hash + 'a,
             for<'b> &'b Self: RefNum<Self>
     {
         intersect_all_segments_ref(edges, mapping)
@@ -579,7 +579,7 @@ impl<E: Ord + Clone> IntersectCoordinate<E> for BasedExpr {
 
 pub fn intersect_all_segments_ref<'a,
     E: Eq + Clone + 'a,
-    T: IntersectCoordinate<E>,
+    T: IntersectCoordinate,
     F: Fn(&E) -> [VectorView2Dyn<'a, T>; 2] + Clone
 >(edges: impl IntoIterator<Item = E>, mapping: F) -> Vec<(E, Vector2<T>)> where
     for<'b> &'b T: RefNum<T>
@@ -674,7 +674,7 @@ impl Frame {
     ///     wherever it intersects a boundary point of the other edge. Then duplicate edges are merged.
     /// * If an edge intersects a boundary point of another edge, the first edge is split at that boundary point.
     /// * If two non-collinear edges intersect in their interiors, they're both split at the point of intersection.
-    pub fn intersect_all_edges_generic<T: NumEx + Coordinate + IntersectCoordinate<Edge>>(&mut self, epsilon: &T) where
+    pub fn intersect_all_edges_generic<T: NumEx + Coordinate>(&mut self, epsilon: &T) where
         for<'a> &'a T: RefNum<T>
     {
         let vertices_coords = T::vertices_coords(self).as_ref().unwrap(); // required by spec
