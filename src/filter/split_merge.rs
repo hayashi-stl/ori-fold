@@ -72,3 +72,181 @@ impl Frame {
         (new_v, new_e)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use indexmap::indexset;
+    use nalgebra::{DVector, vector};
+    use typed_index_collections::ti_vec;
+
+    use crate::{Frame, FrameAttribute};
+    use crate::{Vertex as V, Edge as E, HalfEdge as H, FaceCorner as C, Face as F};
+
+    #[test]
+    fn test_split_edge() {
+        // This is annoying to test; especially because you can turn connected components inside-out,
+        // so just print results.
+ 
+        // No faces. Just a 3-star.
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(0), H(2), H(4)],
+            vec![H(1)],
+            vec![H(3)],
+            vec![H(5)],
+        ]), None);
+        let (new_vertex, new_edge) = frame.split_edge::<f64>(E(0), DVector::from_vec(vec![]));
+        assert_eq!(new_vertex, V(4));
+        assert_eq!(new_edge, E(3));
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[E(0)], [V(0), new_vertex]);
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[new_edge], [new_vertex, V(1)]);
+        frame.assert_topology_consistent();
+
+        // A simple triangle.
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(5), H(0)],
+            vec![H(1), H(2)],
+            vec![H(3), H(4)],
+        ]), Some(ti_vec![
+            vec![H(5), H(3), H(1)],
+        ]));
+        let (new_vertex, new_edge) = frame.split_edge::<f64>(E(1), DVector::from_vec(vec![]));
+        assert_eq!(new_vertex, V(3));
+        assert_eq!(new_edge, E(3));
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[E(1)], [V(1), new_vertex]);
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[new_edge], [new_vertex, V(2)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[F(0)], vec![H(5), new_edge.split()[1], H(3), H(1)]);
+        frame.assert_topology_consistent();
+
+        // Now it's oriented the other way. The half-edge order better be right.
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(0), H(5)],
+            vec![H(2), H(1)],
+            vec![H(4), H(3)],
+        ]), Some(ti_vec![
+            vec![H(0), H(2), H(4)],
+        ]));
+        let (new_vertex, new_edge) = frame.split_edge::<f64>(E(1), DVector::from_vec(vec![]));
+        assert_eq!(new_vertex, V(3));
+        assert_eq!(new_edge, E(3));
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[E(1)], [V(1), new_vertex]);
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[new_edge], [new_vertex, V(2)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[F(0)], vec![H(0), H(2), new_edge.split()[0], H(4)]);
+        frame.assert_topology_consistent();
+
+        // A doubled square
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(7), H(0)],
+            vec![H(1), H(2)],
+            vec![H(3), H(4)],
+            vec![H(5), H(6)]
+        ]), Some(ti_vec![
+            vec![H(0), H(2), H(4), H(6)],
+            vec![H(7), H(5), H(3), H(1)],
+        ]));
+        let (new_vertex, new_edge) = frame.split_edge::<f64>(E(3), DVector::from_vec(vec![]));
+        let [hfwd, hbck] = new_edge.split();
+        assert_eq!(new_vertex, V(4));
+        assert_eq!(new_edge, E(4));
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[E(3)], [V(3), new_vertex]);
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[new_edge], [new_vertex, V(0)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[F(0)], vec![H(0), H(2), H(4), H(6), hfwd]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[F(1)], vec![hbck, H(7), H(5), H(3), H(1)]);
+        frame.assert_topology_consistent();
+
+        // A slitted face
+        // 3----2----2
+        // |         |
+        // |  7-6-6  |
+        // 3  7   5  1
+        // |  4-4-5  |
+        // |,8       |
+        // 0----0----1
+        let mut frame = Frame {
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(0), H(7), H(16)],
+            vec![H(1), H(2)],
+            vec![H(3), H(4)],
+            vec![H(5), H(6)],
+            vec![H(8), H(15), H(17)],
+            vec![H(9), H(10)],
+            vec![H(11), H(12)],
+            vec![H(13), H(14)],
+        ]), Some(ti_vec![
+            vec![H(0), H(2), H(4), H(6), H(16), H(15), H(13), H(11), H(9), H(17)],
+            vec![H(8), H(10), H(12), H(14)],
+        ]));
+        let (new_vertex, new_edge) = frame.split_edge::<f64>(E(8), DVector::from_vec(vec![]));
+        let [hfwd, hbck] = new_edge.split();
+        assert_eq!(new_vertex, V(8));
+        assert_eq!(new_edge, E(9));
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[E(8)], [V(0), new_vertex]);
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[new_edge], [new_vertex, V(4)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[F(0)], vec![H(0), H(2), H(4), H(6), H(16), hfwd, H(15), H(13), H(11), H(9), hbck, H(17)]);
+        frame.assert_topology_consistent();
+
+        // A möbius face. Noticable, a face duplicates a half-edge.
+        // Edges go 0->1->2->3->0 and 0->2.
+        // »---0       3--3»
+        //     |"0   ."     
+        //     4  "."       
+        //     | 2" ".      
+        // >---2"     "1--1>  
+        let mut frame = Frame {
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(7), H(0), H(8)],
+            vec![H(1), H(2)],
+            vec![H(3), H(4), H(9)],
+            vec![H(5), H(6)],
+        ]), Some(ti_vec![
+            vec![H(0), H(2), H(9), H(7), H(5), H(9)],
+            vec![H(0), H(2), H(4), H(6)],
+        ]));
+        let (new_vertex, new_edge) = frame.split_edge::<f64>(E(4), DVector::from_vec(vec![]));
+        let [hfwd, hbck] = new_edge.split();
+        assert_eq!(new_vertex, V(4));
+        assert_eq!(new_edge, E(5));
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[E(4)], [V(0), new_vertex]);
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[new_edge], [new_vertex, V(2)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[F(0)], vec![H(0), H(2), hbck, H(9), H(7), H(5), hbck, H(9)]);
+        frame.assert_topology_consistent();
+
+        // Three triangles from a single edge
+        let mut frame = Frame {
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(0), H(5), H(9), H(13)],
+            vec![H(1), H(2), H(6), H(10)],
+            vec![H(3), H(4)],
+            vec![H(7), H(8)],
+            vec![H(11), H(12)],
+        ]), Some(ti_vec![
+            vec![H(0), H(2), H(4)],
+            vec![H(0), H(6), H(8)],
+            vec![H(0), H(10), H(12)],
+        ]));
+        let (new_vertex, new_edge) = frame.split_edge::<f64>(E(0), DVector::from_vec(vec![]));
+        let [hfwd, hbck] = new_edge.split();
+        assert_eq!(new_vertex, V(5));
+        assert_eq!(new_edge, E(7));
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[E(0)], [V(0), new_vertex]);
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[new_edge], [new_vertex, V(1)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[F(0)], vec![H(0), hfwd, H(2), H(4)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[F(1)], vec![H(0), hfwd, H(6), H(8)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[F(2)], vec![H(0), hfwd, H(10), H(12)]);
+        frame.assert_topology_consistent();
+    }
+}

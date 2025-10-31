@@ -114,10 +114,12 @@ impl Frame {
             assert_ec_fh_consistent(self.edges_face_corners.as_ref().unwrap(), &faces_half_edges);
         }
 
-        if self.frame_attributes.contains(&FrameAttribute::Orientable) {
-            self.assert_oriented();
-        } else if self.frame_attributes.contains(&FrameAttribute::Manifold) {
-            self.assert_manifold_repr();
+        if self.faces_half_edges.is_some() {
+            if self.frame_attributes.contains(&FrameAttribute::Orientable) {
+                self.assert_oriented();
+            } else if self.frame_attributes.contains(&FrameAttribute::Manifold) {
+                self.assert_manifold_repr();
+            }
         }
     }
 
