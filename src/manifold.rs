@@ -445,7 +445,7 @@ mod test {
         assert!(iso.is_none(), "{a:?} is isomorphic to {b:?}");
     }
 
-    fn assert_orientable_vh_isomorphic(
+    fn assert_orientable_vh_fh_isomorphic(
         frame: &Frame,
         expected_vh: &TiSlice<V, Vec<H>>,
         expected_fh: &TiSlice<F, Vec<H>>,
@@ -825,7 +825,7 @@ mod test {
             vec![H(5)],
         ]), None).try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert_orientable_vh_isomorphic(&orientable, &ti_vec![
+        assert_orientable_vh_fh_isomorphic(&orientable, &ti_vec![
             vec![H(0), H(2), H(4)],
             vec![H(1)],
             vec![H(3)],
@@ -845,7 +845,7 @@ mod test {
             vec![H(0), H(2), H(4)],
         ])).try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert_orientable_vh_isomorphic(&orientable, &ti_vec![
+        assert_orientable_vh_fh_isomorphic(&orientable, &ti_vec![
             vec![H(5), H(0)],
             vec![H(1), H(2)],
             vec![H(3), H(4)],
@@ -867,7 +867,7 @@ mod test {
             vec![H(0), H(2), H(4)],
         ])).try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert_orientable_vh_isomorphic(&orientable, &ti_vec![
+        assert_orientable_vh_fh_isomorphic(&orientable, &ti_vec![
             vec![H(5), H(0)],
             vec![H(1), H(2)],
             vec![H(3), H(4), H(6), H(10), H(8)],
@@ -891,7 +891,7 @@ mod test {
             vec![H(7), H(5), H(3), H(1)],
         ])).try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert_orientable_vh_isomorphic(&orientable, &ti_vec![
+        assert_orientable_vh_fh_isomorphic(&orientable, &ti_vec![
             vec![H(7), H(0)],
             vec![H(1), H(2)],
             vec![H(3), H(4)],
@@ -917,7 +917,7 @@ mod test {
             vec![H(6), H(8), H(15)],
         ])).try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert_orientable_vh_isomorphic(&orientable, &ti_vec![
+        assert_orientable_vh_fh_isomorphic(&orientable, &ti_vec![
             vec![H(0), H(8) , H(7)],
             vec![H(2), H(10), H(1)],
             vec![H(4), H(12), H(3)],
@@ -955,7 +955,7 @@ mod test {
             vec![H(8), H(10), H(12), H(14)],
         ])).try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert_orientable_vh_isomorphic(&orientable, &ti_vec![
+        assert_orientable_vh_fh_isomorphic(&orientable, &ti_vec![
             vec![H(0), H(16), H(7)],
             vec![H(2), H(1)],
             vec![H(4), H(3)],
@@ -1026,7 +1026,7 @@ mod test {
             vec![H(8), H(11)],
         ])).try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert_orientable_vh_isomorphic(&orientable, &ti_vec![
+        assert_orientable_vh_fh_isomorphic(&orientable, &ti_vec![
             vec![H(7), H(10), H(8), H(0)],
             vec![H(1), H(2)],
             vec![H(3), H(9), H(11), H(4)],
@@ -1055,7 +1055,7 @@ mod test {
             vec![H(10), H(12), H(19)],
         ])).try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert_orientable_vh_isomorphic(&orientable, &ti_vec![
+        assert_orientable_vh_fh_isomorphic(&orientable, &ti_vec![
             vec![H(0), H(15)],
             vec![H(2), H(16), H(1)],
             vec![H(4), H(3)],
@@ -1095,7 +1095,7 @@ mod test {
             vec![H(22), H(24), H(31)],
         ])).try_into_orientable();
         let (orientable, fans) = orientable.unwrap();
-        assert_orientable_vh_isomorphic(&orientable, &ti_vec![
+        assert_orientable_vh_fh_isomorphic(&orientable, &ti_vec![
             vec![H(0), H(8) , H(7)],
             vec![H(2), H(10), H(1)],
             vec![H(4), H(12), H(3)],

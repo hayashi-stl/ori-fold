@@ -446,6 +446,8 @@ pub trait EdgesVerticesEx {
     fn at_mut(&mut self, index: HalfEdge) -> [&mut Vertex; 2];
     fn try_at(&self, index: HalfEdge) -> Option<[Vertex; 2]>;
     fn try_at_mut(&mut self, index: HalfEdge) -> Option<[&mut Vertex; 2]>;
+    fn half_iter_enumerated(&self) -> impl Iterator<Item = (HalfEdge, Vertex)>;
+    fn half_iter_mut_enumerated(&mut self) -> impl Iterator<Item = (HalfEdge, &mut Vertex)>;
 }
 
 pub trait EdgesFaceCornersEx {
@@ -479,6 +481,14 @@ impl EdgesVerticesEx for EdgesVerticesSlice {
         let mut result = result.get_disjoint_mut([0, 1]).unwrap();
         if index.flip_bit() { result.reverse() }
         Some(result)
+    }
+
+    fn half_iter_enumerated(&self) -> impl Iterator<Item = (HalfEdge, Vertex)> {
+        self.iter_enumerated().flat_map(|(e, vs)| e.split().into_iter().zip(*vs))
+    }
+
+    fn half_iter_mut_enumerated(&mut self) -> impl Iterator<Item = (HalfEdge, &mut Vertex)> {
+        self.iter_mut_enumerated().flat_map(|(e, vs)| e.split().into_iter().zip(vs))
     }
 }
 

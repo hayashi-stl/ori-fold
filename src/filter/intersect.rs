@@ -2,7 +2,7 @@ use std::{cmp::{Ordering, Reverse}, collections::BinaryHeap, marker::PhantomData
 
 use exact_number::BasedExpr;
 use indexmap::IndexMap;
-use nalgebra::{vector, RawStorage, RealField, Vector2};
+use nalgebra::{DVector, Dyn, RawStorage, RealField, Vector2, vector};
 use num_traits::{RefNum, Zero};
 use robust_geometry as robust;
 
@@ -685,6 +685,7 @@ impl Frame {
             |&e| edges_vertices[e].map(|v| vertices_coords.fixed_view::<2, 1>(0, v.0)),
             epsilon
         );
+        self.split_edges(splits.into_iter().map(|(e, at)| (e, DVector::from_vec(at.data.0[0].to_vec()))));
     }
 }
 

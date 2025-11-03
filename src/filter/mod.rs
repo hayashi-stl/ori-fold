@@ -2,10 +2,10 @@ use std::{iter, mem};
 
 use exact_number::BasedExpr;
 use indexmap::{indexmap, map::Entry, IndexMap};
-use nalgebra::{DMatrix, DVector, Dyn, Scalar};
+use nalgebra::{DMatrix, DVector, Dim, Dyn, Scalar, VectorView};
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{EdgeDatas, FaceDatas, VertexDatas, filter::intersect::IntersectCoordinate, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}};
+use crate::{EdgeDatas, FaceDatas, VertexDatas, filter::intersect::IntersectCoordinate, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::FloatOrd};
 
 pub mod intersect;
 pub mod split_merge;
@@ -63,19 +63,70 @@ impl RemoveStrategy for ShiftRemove {
 }
 
 pub trait Coordinate: Sized + IntersectCoordinate {
+    type Sortable: Ord;
+    type SortableRef<'a>: Ord;
+
+    fn into_sortable(self) -> Self::Sortable;
+    fn to_sortable_ref(&self) -> Self::SortableRef<'_>;
+    //fn to_sortable_slice(slice: &[Self]) -> &[Self::Sortable];
+    //fn vector_to_sortable<D: Dim>(vector: VectorView<'_, Self, D>) -> &[Self::Sortable] {
+    //    Self::to_sortable_slice(vector.data.into_slice())
+    //}
+
     fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>>;
     fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>>;
 }
 
 impl Coordinate for f64 {
+    type Sortable = FloatOrd<f64>;
+    type SortableRef<'a> = FloatOrd<f64>;
+
+    fn into_sortable(self) -> Self::Sortable {
+        FloatOrd(self)
+    }
+
+    fn to_sortable_ref(&self) -> Self::SortableRef<'_> {
+        FloatOrd(*self)
+    }
+    //fn to_sortable_slice(slice: &[Self]) -> &[Self::Sortable] {
+    //    // Safety: FloatOrd is repr(transparent) for f64
+    //    unsafe { mem::transmute(slice) }
+    //}
+
     fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_f64 }
     fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_f64 }
 }
 
 impl Coordinate for BasedExpr {
+    type Sortable = BasedExpr;
+    type SortableRef<'a> = &'a BasedExpr;
+
+    fn into_sortable(self) -> Self::Sortable {
+        self
+    }
+
+    fn to_sortable_ref(&self) -> Self::SortableRef<'_> {
+        self
+    }
+    //fn to_sortable_slice(slice: &[Self]) -> &[Self::Sortable] {
+    //    slice
+    //}
+
     fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_exact }
     fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_exact }
 }
+
+//pub trait SliceEx {
+//    type Elem;
+//    fn to_sortable(&self) -> &[<Self::Elem as Coordinate>::Sortable] where Self::Elem: Coordinate;
+//}
+//
+//impl<T: Coordinate> SliceEx for [T] {
+//    type Elem = T;
+//    fn to_sortable(&self) -> &[<Self::Elem as Coordinate>::Sortable] where Self::Elem: Coordinate {
+//        T::to_sortable_slice(self)
+//    }
+//}
 
 /// Sets a column without cloning.
 fn set_column<T: Scalar>(mtx: &mut DMatrix<T>, index: usize, col: DVector<T>) {
@@ -444,12 +495,11 @@ impl Frame {
         fh[face].reverse();
     }
 
-    fn fix_manifold_attributes_after_adding_faces(&mut self, faces: impl IntoIterator<Item = Face>) {
+    fn fix_manifold_attributes_on_half_edges(&mut self, half_edges: impl IntoIterator<Item = HalfEdge>) {
         let mut fan_map = indexmap! {};
 
-        let fh = self.faces_half_edges.as_ref().unwrap();
         let ev = self.edges_vertices.as_ref().unwrap();
-        let mut half_edges = faces.into_iter().flat_map(|f| fh[f].iter().copied()).collect::<Vec<_>>();
+        let mut half_edges = half_edges.into_iter().collect::<Vec<_>>();
         half_edges.sort();
         half_edges.dedup();
         let mut vertices = half_edges.iter().map(|&h| ev.at(h)[0]).collect::<Vec<_>>();
@@ -476,24 +526,24 @@ impl Frame {
             }
         }
 
-        if self.frame_attributes.contains(&FrameAttribute::Orientable) {
-            let ec = self.edges_face_corners.as_ref().unwrap();
-            for &h in &half_edges {
-                if ec.at(h).len() == 2 {
-                    self.frame_attributes.swap_remove(&FrameAttribute::Orientable);
-                    break;
+        if let Some(ec) = self.edges_face_corners.as_ref() {
+            if self.frame_attributes.contains(&FrameAttribute::Orientable) {
+                for &h in &half_edges {
+                    if ec.at(h).len() == 2 {
+                        self.frame_attributes.swap_remove(&FrameAttribute::Orientable);
+                        break;
+                    }
                 }
             }
-        }
 
-        if self.frame_attributes.contains(&FrameAttribute::Orientable) {
-            // Flip fans if necessary
-            let ec = self.edges_face_corners.as_ref().unwrap();
-            let fh = self.faces_half_edges.as_ref().unwrap();
-            for (_, fans) in &mut fan_map {
-                for (fan, _) in fans {
-                    if fan.len() >= 2 && (ec.at(fan[0]).is_empty() || fh.at(ec.at(fan[0])[0].prev(fh)).flipped() != fan[1]) {
-                        fan.reverse();
+            if self.frame_attributes.contains(&FrameAttribute::Orientable) {
+                // Flip fans if necessary
+                let fh = self.faces_half_edges.as_ref().unwrap();
+                for (_, fans) in &mut fan_map {
+                    for (fan, _) in fans {
+                        if fan.len() >= 2 && (ec.at(fan[0]).is_empty() || fh.at(ec.at(fan[0])[0].prev(fh)).flipped() != fan[1]) {
+                            fan.reverse();
+                        }
                     }
                 }
             }
@@ -506,6 +556,12 @@ impl Frame {
                 vh[v] = fans.into_iter().flat_map(|(fan, _)| fan).collect();
             }
         }
+    }
+
+    fn fix_manifold_attributes_on_faces(&mut self, faces: impl IntoIterator<Item = Face>) {
+        let fh = self.faces_half_edges.as_ref().unwrap();
+
+        self.fix_manifold_attributes_on_half_edges(faces.into_iter().flat_map(|f| fh[f].iter().copied()).collect::<Vec<_>>());
     }
 
     /// Adds an face given some face data and returns its index.
@@ -525,7 +581,7 @@ impl Frame {
             assert_eq!(ev.at(h0)[1], ev.at(h1)[0], "half-edges in added face must form a loop")
         }
         let index = self.add_face_unchecked(face_data);
-        self.fix_manifold_attributes_after_adding_faces(iter::once(index));
+        self.fix_manifold_attributes_on_faces(iter::once(index));
         index
     }
 
@@ -549,7 +605,7 @@ impl Frame {
         }
         let len = face_datas.len();
         let index = self.add_faces_unchecked(face_datas);
-        self.fix_manifold_attributes_after_adding_faces((0..len).map(|i| index + Face(i)));
+        self.fix_manifold_attributes_on_faces((0..len).map(|i| index + Face(i)));
         index
     }
 
