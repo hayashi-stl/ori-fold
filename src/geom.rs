@@ -138,11 +138,10 @@ impl Atan2 for Vector2<BasedExpr> {
 }
 
 /// Sorts the coordinates by angle increasing, according to `AngleRep::angle_rep`.
-pub fn sort_by_angle<T, S, F: FnMut(&T) -> Vector2<S>>(points: &mut [T], origin: &T, mut mapping: F) where 
+pub fn sort_by_angle<T, S, F: FnMut(&T) -> Vector2<S>>(points: &mut [T], origin: VectorView2Dyn<S>, mut mapping: F) where 
     S: Scalar + ClosedSubAssign,
     Vector2<S>: Atan2
 {
-    let origin = mapping(origin);
     points.sort_by_key(|p| (mapping(p) - &origin).angle_rep());
 }
 
@@ -150,11 +149,10 @@ pub fn sort_by_angle<T, S, F: FnMut(&T) -> Vector2<S>>(points: &mut [T], origin:
 /// 
 /// Unlike `sort_by_angle_field`, the return value of `mapping` *cannot* borrow from the argument,
 /// but *can* from elsewhere. See https://github.com/rust-lang/rust/issues/34162
-pub fn sort_by_angle_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(points: &mut [T], origin: &T, mut mapping: F) where 
+pub fn sort_by_angle_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(points: &mut [T], origin: VectorView2Dyn<S>, mut mapping: F) where 
     S: Scalar + ClosedSubAssign,
     Vector2<S>: Atan2
 {
-    let origin = mapping(origin);
     points.sort_by_key(|p| (mapping(p) - &origin).angle_rep());
 }
 
@@ -162,11 +160,10 @@ pub fn sort_by_angle_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(points
 /// 
 /// Unlike `sort_by_angle_ref`, the return value of `mapping` *can* borrow from the argument,
 /// but *not* from elsewhere. See https://github.com/rust-lang/rust/issues/34162
-pub fn sort_by_angle_field<T, S, F: FnMut(&T) -> VectorView2Dyn<S>>(points: &mut [T], origin: &T, mut mapping: F) where 
+pub fn sort_by_angle_field<T, S, F: FnMut(&T) -> VectorView2Dyn<S>>(points: &mut [T], origin: VectorView2Dyn<S>, mut mapping: F) where 
     S: Scalar + ClosedSubAssign,
     Vector2<S>: Atan2
 {
-    let origin = mapping(origin);
     points.sort_by_key(|p| (mapping(p) - &origin).angle_rep());
 }
 
@@ -446,7 +443,7 @@ mod test {
         (indexes, perm)
     }
 
-    fn sort_by_angle_test<T, S>(mut points: Vec<T>, origin: T, mut mapping: impl FnMut(&T) -> VectorView2Dyn<S>, expected: Vec<T>) where
+    fn sort_by_angle_test<T, S>(points: Vec<T>, origin: Vector2<S>, mut mapping: impl FnMut(&T) -> VectorView2Dyn<S>, expected: Vec<T>) where
         T: Clone + Debug + PartialEq,
         S: Scalar + ClosedSubAssign,
         Vector2<S>: Atan2
@@ -454,12 +451,11 @@ mod test {
         let (mut indexes, expected_indexes) = permutation(&points, &expected);
         let mut points_a = points.clone();
         let mut points_b = points.clone();
-        points.push(origin.clone());
-        sort_by_angle_ref(&mut indexes, &(points.len() - 1), |i| mapping(&points[*i]));
+        sort_by_angle_ref(&mut indexes, origin.as_view(), |i| mapping(&points[*i]));
         assert_eq!(indexes, expected_indexes);
-        sort_by_angle_field(&mut points_a, &origin, &mut mapping);
+        sort_by_angle_field(&mut points_a, origin.as_view(), &mut mapping);
         assert_eq!(points_a, expected);
-        sort_by_angle(&mut points_b, &origin, |t| mapping(t).clone_owned());
+        sort_by_angle(&mut points_b, origin.as_view(), |t| mapping(t).clone_owned());
         assert_eq!(points_b, expected);
     }
 

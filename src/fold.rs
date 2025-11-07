@@ -29,14 +29,12 @@ pub enum FileClass {
 pub(crate) fn version() -> String { "1.2".to_owned() }
 
 #[derive(Clone, Debug)]
-#[derive(Getters)]
 #[cfg_attr(test, derive(PartialEq))] // Really no point in this derivation outside of tests
 pub struct Fold {
     /// The version of the FOLD spec that the file assumes.
     /// **Strongly recommended**, in case we ever have to make
     /// backward-incompatible changes.
-    #[getset(get = "pub")]
-    pub(crate) file_spec: String,
+    pub file_spec: String,
     /// The software that created the file.
     /// **Recommended** for files output by computer software;
     /// less important for files made by hand.
@@ -454,9 +452,11 @@ pub trait EdgesFaceCornersEx {
     fn at(&self, index: HalfEdge) -> &[FaceCorner];
     fn at_mut(&mut self, index: HalfEdge) -> &mut Vec<FaceCorner>;
     fn pair_at(&self, index: HalfEdge) -> [&[FaceCorner]; 2];
+    fn pair_at_mut(&mut self, index: HalfEdge) -> [&mut Vec<FaceCorner>; 2];
     fn try_at(&self, index: HalfEdge) -> Option<&[FaceCorner]>;
     fn try_at_mut(&mut self, index: HalfEdge) -> Option<&mut Vec<FaceCorner>>;
     fn try_pair_at(&self, index: HalfEdge) -> Option<[&[FaceCorner]; 2]>;
+    fn try_pair_at_mut(&mut self, index: HalfEdge) -> Option<[&mut Vec<FaceCorner>; 2]>;
     fn half_iter_enumerated(&self) -> impl Iterator<Item = (HalfEdge, &Vec<FaceCorner>)>;
     fn half_iter_mut_enumerated(&mut self) -> impl Iterator<Item = (HalfEdge, &mut Vec<FaceCorner>)>;
 }
@@ -505,6 +505,10 @@ impl EdgesFaceCornersEx for EdgesFaceCornersSlice {
         self.try_pair_at(index).unwrap()
     }
 
+    fn pair_at_mut(&mut self, index: HalfEdge) -> [&mut Vec<FaceCorner>; 2] {
+        self.try_pair_at_mut(index).unwrap()
+    }
+
     fn try_at(&self, index: HalfEdge) -> Option<&[FaceCorner]> {
         self.get(index.edge())?.get(index.flip_bit() as usize).map(|cs| cs.as_slice())
     }
@@ -515,6 +519,11 @@ impl EdgesFaceCornersEx for EdgesFaceCornersSlice {
 
     fn try_pair_at(&self, index: HalfEdge) -> Option<[&[FaceCorner]; 2]> {
         self.try_at(index).and_then(|cs| self.try_at(index.flipped()).map(|cs2| [cs, cs2]))
+    }
+
+    fn try_pair_at_mut(&mut self, index: HalfEdge) -> Option<[&mut Vec<FaceCorner>; 2]> {
+        let [r0, r1] = self.get_mut(index.edge())?;
+        Some(if index.flip_bit() { [r1, r0] } else { [r0, r1] })
     }
 
     fn half_iter_enumerated(&self) -> impl Iterator<Item = (HalfEdge, &Vec<FaceCorner>)> {
@@ -787,11 +796,57 @@ impl FaceDatas {
 
 /// A FOLD frame, containing geometry information.
 /// 
-/// All operations prefer exact coordinates (`vertices_coords_exact`, `edges_fold_angle_exact`, `edges_length2_exact`),
-/// not messing with approximate coordinates (`vertices_coords_f64`, `edges_fold_angle_f64`, `edges_length_f64`) when both exist.
+/// Note: the fields are public in the spirit of easy accessibility, and to allow
+/// borrowing a field mutably while a different field is borrowed. However, there are conditions to
+/// satisfy, and they are documented in each field. If any condition is not satisfied,
+/// panics and unspecified behavior may result, but not undefined behavor. Beware.
+/// 
+/// # Coordinates
+/// Coordinates and other numerical values
+/// are allowed to be *exact* ([`Frame::vertices_coords_exact`], [`Frame::edges_fold_angle_exact`], [`Frame::edges_length2_exact`])
+/// or *approximate* ([`Frame::vertices_coords_f64`], [`Frame::edges_fold_angle_f64`], [`Frame::edges_length_f64`]).
+/// For each pair of coordinate fields, you will usually work with one of them at a time. We will consider that one to be *trusted*,
+/// and its data does not have to match the data in the other field in the pair.
+/// 
+/// # Manifold Representation
+/// A frame is a *manifold* if the following conditions are true:
+/// * Every edge is attached to at most 2 faces. In other words, `|edges_face_corners[e][0]| + |edges_face_corners[e][1]| ≤ 2`
+///     for all edges `e`.
+/// * For each vertex `v`, if a subset of the edges adjacent to `v` can be listed in a *cycle* in such a way that adjacent
+///     edges share a face at a unique corner, then that subset must be all the edges adjacent to `v`. In other words,
+///     `v` cannot both have a loop of faces and some other edge attached to it. The exact definition is complicated, unfortunately.
+/// 
+/// A frame is in *manifold representation* if it is a manifold and:
+/// * [FrameAttribute::Manifold] is set
+/// * The lists of half-edges in `vertices_half_edges` are sorted cyclically. That is, for each vertex `v`:
+///     * If `i` and `j` are not consecutive (counting 0 and the last index as consecutive), then `vertices_half_edges[v][i].edge()` and
+///         `vertices_half_edges[v][j].edge()` do not share a face.
+///     * If there exists consecutive `i` and `j` (*not* counting 0 and the last index as consecutive) where
+///         `vertices_half_edges[v][i].edge()` and `vertices_half_edges[v][j].edge()` do not share a face, then
+///         `vertices_half_edges[v][0].edge()` and the last edge in `vertices_half_edges[v]` do not share a face.
+///         (only in the case of a complete loop of faces is wraparound allowed)
+/// 
+/// To attempt to convert a frame to manifold representation, call [Frame::try_into_manifold].
+/// 
+/// # Oriented Representation
+/// A frame is *oriented* if the following conditions are true:
+/// * The frame is a [manifold](Frame#manifold-representation)
+/// * Every *half-edge* is adjacent to at most 1 face. In other words, `|edges_face_corners.at(h)| ≤ 1` for all half-edges `h`.
+/// 
+/// A frame is *orientable* if it is possible to flip faces (reverse their windings) to make it oriented.
+/// 
+/// A frame is in *oriented representation* if:
+/// * [FrameAttribute::Orientable] is set
+/// * The frame is oriented
+/// * The frame is in [manifold representation](Frame#manifold-representation)
+/// * The lists of half-edges in `vertices_half_edges` are sorted cyclically *with counterclockwise orientation*. That is, for each vertex `v`:
+///     * For all `i` and `j`, if `j = i + 1` or `j = 0` and `i` is the last index, then if the *edges*
+///         `vertices_half_edges[v][j].edge()` and `vertices_half_edges[v][i].edge()` share a face, then the *half-edges*
+///         `vertices_half_edges[v][j]` and `vertices_half_edges[v][i].flipped()` share a face.
+/// 
+/// To attempt to convert a frame to oriented representation, call [Frame::try_into_orientable].
 #[derive(Clone, Debug)]
 #[derive(Serialize, Deserialize)]
-#[derive(Getters, CopyGetters)]
 #[cfg_attr(test, derive(PartialEq))] // Really no point in this derivation outside of tests
 #[serde(try_from = "crate::ser_de::SerDeFrame", into = "crate::ser_de::SerDeFrame")]
 pub struct Frame {
@@ -807,24 +862,40 @@ pub struct Frame {
     /// folded structure being represented.
     /// 
     /// # Requirements
-    /// * At most 1 of [`_2D`](FrameAttribute::_2D), [`_3D`](FrameAttribute::_3D), and [`Abstract`](FrameAttribute::Abstract) are set.
-    /// * [`Manifold`](FrameAttribute::Manifold) and [`NonManifold`](FrameAttribute::NonManifold) are not both set.
-    /// * [`Orientable`](FrameAttribute::Orientable) and [`NonManifold`](FrameAttribute::NonManifold) are not both set.
-    /// * [`Orientable`](FrameAttribute::Orientable) and [`NonOrientable`](FrameAttribute::NonOrientable) are not both set.
-    /// * [`SelfTouching`](FrameAttribute::SelfTouching) and [`NonSelfTouching`](FrameAttribute::NonSelfTouching) are not both set.
-    /// * [`SelfIntersecting`](FrameAttribute::SelfIntersecting) and [`NonSelfTouching`](FrameAttribute::NonSelfTouching) are not both set.
-    /// * [`SelfIntersecting`](FrameAttribute::SelfIntersecting) and [`NonSelfIntersecting`](FrameAttribute::NonSelfIntersecting) are not both set.
-    /// * [`Cuts`](FrameAttribute::Cuts) and [`NoCuts`](FrameAttribute::NoCuts) are not both set.
-    /// * [`Joins`](FrameAttribute::Joins) and [`NoJoins`](FrameAttribute::NoJoins) are not both set.
-    /// * [`ConvexFaces`](FrameAttribute::ConvexFaces) and [`NonConvexFaces`](FrameAttribute::NonConvexFaces) are not both set.
-    #[getset(get = "pub")]
-    pub(crate) frame_attributes: IndexSet<FrameAttribute>,
+    /// * No collisions:
+    ///     * At most 1 of [`FrameAttribute::_2D`], [`FrameAttribute::_3D`], and [`FrameAttribute::Abstract`] are set.
+    ///     * [`FrameAttribute::Manifold`] and [`FrameAttribute::NonManifold`] are not both set.
+    ///     * [`FrameAttribute::Orientable`] and [`FrameAttribute::NonManifold`] are not both set.
+    ///     * [`FrameAttribute::Orientable`] and [`FrameAttribute::NonOrientable`] are not both set.
+    ///     * [`FrameAttribute::SelfTouching`] and [`FrameAttribute::NonSelfTouching`] are not both set.
+    ///     * [`FrameAttribute::SelfIntersecting`] and [`FrameAttribute::NonSelfTouching`] are not both set.
+    ///     * [`FrameAttribute::SelfIntersecting`] and [`FrameAttribute::NonSelfIntersecting`] are not both set.
+    ///     * [`FrameAttribute::Cuts`] and [`FrameAttribute::NoCuts`] are not both set.
+    ///     * [`FrameAttribute::Joins`] and [`FrameAttribute::NoJoins`] are not both set.
+    ///     * [`FrameAttribute::ConvexFaces`] and [`FrameAttribute::NonConvexFaces`] are not both set.
+    /// * If [`FrameAttribute::_2D`] is set, there must be a [*trusted*](Frame#coordinates) set of coordinates
+    ///     ([`Frame::vertices_coords_exact`] or [`Frame::vertices_coords_f64`]), and all its coordinates must be 2D.
+    /// * If [`FrameAttribute::_3D`] is set, there must be a [*trusted*](Frame#coordinates) set of coordinates
+    ///     ([`Frame::vertices_coords_exact`] or [`Frame::vertices_coords_f64`]), and all its coordinates must be 3D.
+    /// * If [`FrameAttribute::Manifold`] is set, the frame must be in
+    ///     [*manifold representation*](Frame#manifold-representation)
+    /// * If [`FrameAttribute::Orientable`] is set, the frame must be in
+    ///     [*oriented representation*](Frame#oriented-representation)
+    /// * If [`FrameAttribute::NoCuts`] is set, no edge assignments can be [`EdgeAssignment::Cut`].
+    /// * If [`FrameAttribute::NoJoins`] is set, no edge assignments can be [`EdgeAssignment::Join`].
+    pub frame_attributes: IndexSet<FrameAttribute>,
     /// Physical or logical unit that all coordinates are relative to
     pub frame_unit: FrameUnit,
 
     /// The basis that exact coordinates uses.
-    #[getset(get = "pub")]
-    pub(crate) basis: Option<ArcBasis>,
+    /// 
+    /// # Existence requirements
+    /// * If an exact value field is used, this must exist.
+    /// 
+    /// # Requirements (if exists)
+    /// * All exact values in this frame ([`Frame::vertices_coords_exact`], [`Frame::edges_fold_angle_exact`], [`Frame::edges_length2_exact`])
+    ///     use this basis.
+    pub basis: Option<ArcBasis>,
 
     /// For each vertex, an array of approximate coordinates,
     /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
@@ -837,13 +908,14 @@ pub struct Frame {
     /// 
     /// **Recommended** except for frames with attribute `Abstract`.
     /// 
-    /// # Requirements
-    /// * **Exists** if [`_2D`](FrameAttribute::_2D) or [`_3D`](FrameAttribute::_3D) is set
-    ///   and `vertices_coords_exact == None`.
-    /// * If [`_2D`](FrameAttribute::_2D) or [`_3D`](FrameAttribute::_3D) is set,
+    /// # Existence requirements
+    /// * If [`FrameAttribute::_2D`] or [`FrameAttribute::_3D`] is set and [`Frame::vertices_coords_exact`] doesn't exist,
+    ///     then this must exist and be trusted.
+    /// 
+    /// # Requirements (if exists)
+    /// * If this is [*trusted*](Frame#coordinates), then [`FrameAttribute::_2D`] or [`FrameAttribute::_3D`] is set,
     ///   the coordinate dimensions match the attribute.
-    #[getset(get = "pub")]
-    pub(crate) vertices_coords_f64: Option<DMatrix<f64>>,
+    pub vertices_coords_f64: Option<DMatrix<f64>>,
     /// For each vertex, an array of exact coordinates,
     /// such as `[x, y, z]` or `[x, y]` (where `z` is implicitly zero).
     /// In higher dimensions, all trailing unspecified coordinates are implicitly
@@ -855,14 +927,21 @@ pub struct Frame {
     /// 
     /// **Recommended** except for frames with attribute `Abstract`.
     /// 
-    /// # Requirements
-    /// * If [`_2D`](FrameAttribute::_2D) or [`_3D`](FrameAttribute::_3D) is set,
+    /// # Existence requirements
+    /// * If [`FrameAttribute::_2D`] or [`FrameAttribute::_3D`] is set and [`Frame::vertices_coords_f64`] doesn't exist,
+    ///     then this must exist and be trusted.
+    /// 
+    /// # Requirements (if exists)
+    /// * The basis of each coordinate must match [`Frame::basis`].
+    /// * If this is [*trusted*](Frame#coordinates), then [`FrameAttribute::_2D`] or [`FrameAttribute::_3D`] is set,
     ///   the coordinate dimensions match the attribute.
-    #[getset(get = "pub")]
-    pub(crate) vertices_coords_exact: Option<DMatrix<BasedExpr>>,
+    pub vertices_coords_exact: Option<DMatrix<BasedExpr>>,
     /// The number of vertices. Necessary to handle isolated vertices.
-    #[getset(get_copy = "pub")]
-    pub(crate) num_vertices: usize,
+    /// 
+    /// # Requirements
+    /// * This number must equal the lengths of all vertex fields that exist, including `vertices_custom[field]` for all valid `field`.
+    /// * No vertex index mentioned in [`Frame::edges_vertices`] is at least this number.
+    pub num_vertices: usize,
     /// For each vertex, an array of edge IDs for the *half-edge*s
     /// incident to the vertex.  If the frame represents an orientable manifold,
     /// this list should be ordered counterclockwise around the vertex.
@@ -870,29 +949,61 @@ pub struct Frame {
     /// ordered around the vertex.
     /// Note that `vertices_half_edges[v][i]` should be an edge *from* vertex
     /// `v` *to* the edge's other vertex.
-    #[getset(get = "pub")]
-    pub(crate) vertices_half_edges: Option<VerticesHalfEdges>,
+    /// 
+    /// # Existence requirements
+    /// * Exists if [`Frame::edges_vertices`] exists.
+    /// 
+    /// # Requirements (if exists)
+    /// * The length must be [`Frame::num_vertices`].
+    /// * This must be consistent with [`Frame::edges_vertices`]. In other words,
+    ///     * for all vertices `v` and valid indices `i`, `edges_vertices.at(vertices_half_edges[v][i])` = `v`.
+    ///     * for all half-edges `h`, `vertices_half_edges[edges_vertices.at(h)]` must contain `h`.
+    /// * If [`FrameAttribute::Manifold`] is set, the frame must be in [*manifold representation*](Frame#manifold-representation)
+    /// * If [`FrameAttribute::Orientable`] is set, the frame must be in [*oriented representation*](Frame#oriented-representation)
+    pub vertices_half_edges: Option<VerticesHalfEdges>,
     /// `edges_vertices`: For each edge, an array `[u, v]` of two different vertex IDs for
     /// the two endpoints of the edge.  This effectively defines the *orientation*
     /// of the edge, from `u` to `v`.  (This orientation choice is arbitrary,
     /// but is used to define the ordering of `edges_faces`.)
     /// **Recommended** in frames having any `edges_...` property
     /// (e.g., to represent mountain-valley assignment).
-    #[getset(get = "pub")]
-    pub(crate) edges_vertices: Option<EdgesVertices>,
-    /// For each edge, an array of (face ID, corner index)s for the faces incident
+    /// 
+    /// # Existence requirements
+    /// * Exists if [`Frame::vertices_half_edges`] or any edge data (fields that start with `edges_`) exist.
+    /// 
+    /// # Requirements (if exists)
+    /// * The consistency requirements mentioned in [`Frame::vertices_half_edges`] must hold.
+    /// * The length must be consistent with the lengths of all edge fields that exists (including `edges_custom[field]` for all valid `field`,
+    ///     and `edge_orders`)
+    /// * [`Frame::edge_orders`] (if it exists) does not mention any edge with an index that's at least this field's length.
+    pub edges_vertices: Option<EdgesVertices>,
+    /// For each edge, an array of face corners for the faces incident
     /// to the *unflipped half-edge* indicated by `edges_vertices`,
-    /// followed by an array of (face ID, corner index)s for the faces incident
+    /// followed by an array of face corners for the faces incident
     /// to the *flipped half-edge*.
     /// For manifolds, the arrays for each edge should contain at most 2 face corners *total*.
     /// for orientable manifolds, the arrays for each edge should contain at most 1 face corner *each*.
-    #[getset(get = "pub")]
-    pub(crate) edges_face_corners: Option<EdgesFaceCorners>,
+    /// 
+    /// # Existence requirements
+    /// * Exists if [`Frame::faces_half_edges`] exists.
+    /// 
+    /// # Requirements (if exists)
+    /// * The length must be consistent with [`Frame::edges_vertices`]
+    /// * Self-loops are not allowed. For each edge `e`, `edges_vertices[e][0]` ≠ `edges_vertices[e][1]`.
+    /// * This must be consistent with [`Frame::faces_half_edges`]. In other words,
+    ///     * for all half-edges `h`, and valid indices `i`, `faces_half_edges.at(edges_face_corners.at(h)[i])`.
+    ///     * for all face corners `c`, `edges_face_corners.at(faces_half_edges.at(c))` must contain `c`.
+    /// * If [`FrameAttribute::Orientable`] is set, the frame must be in [*oriented representation*](Frame#oriented-representation)
+    pub edges_face_corners: Option<EdgesFaceCorners>,
     /// For each edge, a string representing its fold direction assignment
     /// 
     /// This is *not* updated automatically when fold angles are updated.
-    #[getset(get = "pub")]
-    pub(crate) edges_assignment: Option<TiVec<Edge, EdgeAssignment>>,
+    /// 
+    /// # Requirements (if exists)
+    /// * The length must be consistent with [`Frame::edges_vertices`]
+    /// * If [`FrameAttribute::NoCuts`] is set, no edge assignments can be [`EdgeAssignment::Cut`].
+    /// * If [`FrameAttribute::NoJoins`] is set, no edge assignments can be [`EdgeAssignment::Join`].
+    pub edges_assignment: Option<TiVec<Edge, EdgeAssignment>>,
     /// For each edge, the fold angle (deviation from flatness)
     /// along each edge of the pattern. The fold angle is positive for
     /// valley folds, negative for mountain folds, and zero for flat, unassigned,
@@ -900,14 +1011,19 @@ pub struct Frame {
     /// the sign of `edge_foldAngle` to match `edges_assignment` if both are specified.
     /// 
     /// Note: this is *not* automatically updated when vertex coordinates or edge assignment are updated.
-    #[getset(get = "pub")]
-    pub(crate) edges_fold_angle_f64: Option<TiVec<Edge, f64>>,
+    /// 
+    /// # Requirements (if exists)
+    /// * The length must be consistent with [`Frame::edges_vertices`]
+    pub edges_fold_angle_f64: Option<TiVec<Edge, f64>>,
     /// For each edge, the *exact* fold angle (deviation from flatness)
     /// along each edge of the pattern.
     /// 
     /// Note: this is *not* automatically updated when vertex coordinates or edge assignment are updated.
-    #[getset(get = "pub")]
-    pub(crate) edges_fold_angle_exact: Option<TiVec<Edge, Angle>>,
+    /// 
+    /// # Requirements (if exists)
+    /// * The length must be consistent with [`Frame::edges_vertices`]
+    /// * The basis of each fold angle must match [`Frame::basis`].
+    pub edges_fold_angle_exact: Option<TiVec<Edge, Angle>>,
 
     /// For each edge, the approximate length of the edge.
     /// This is mainly useful for defining the intrinsic geometry of
@@ -915,21 +1031,35 @@ pub struct Frame {
     /// otherwise, `edges_length` can be computed from `vertices_coords`.
     /// 
     /// Note: this is *not* automatically updated when vertex coordinates are updated.
-    #[getset(get = "pub")]
-    pub(crate) edges_length_f64: Option<TiVec<Edge, f64>>,
+    /// 
+    /// # Requirements (if exists)
+    /// * The length must be consistent with [`Frame::edges_vertices`]
+    pub edges_length_f64: Option<TiVec<Edge, f64>>,
     /// For each edge, the exact squared length of the edge.
     /// This is mainly useful for defining the intrinsic geometry of
     /// abstract complexes where `vertices_coords` are unspecified;
     /// otherwise, `edges_length` can be computed from `vertices_coords`.
     /// 
     /// Note: this is *not* automatically updated when vertex coordinates are updated.
-    #[getset(get = "pub")]
-    pub(crate) edges_length2_exact: Option<TiVec<Edge, BasedExpr>>,
+    /// 
+    /// # Requirements (if exists)
+    /// * The length must be consistent with [`Frame::edges_vertices`]
+    /// * The basis of each length must match [`Frame::basis`].
+    pub edges_length2_exact: Option<TiVec<Edge, BasedExpr>>,
 
     /// For each face, an array *half-edge* IDs for the edges around
     /// the face *in counterclockwise order*. (See `HalfEdge`).
-    #[getset(get = "pub")]
-    pub(crate) faces_half_edges: Option<FacesHalfEdges>,
+    /// 
+    /// # Existence requirements
+    /// * Exists if [`Frame::edges_face_corners`] or any face data (fields that start with `faces_`) exist.
+    /// 
+    /// # Requirements (if exists)
+    /// * The consistency requirements mentioned in [`Frame::edges_face_corners`] must hold.
+    /// * The length must be consistent with the lengths of all face fields that exist (including `faces_custom[field]` for all valid `field`,
+    ///     and `face_orders`)
+    /// * [`Frame::face_orders`] (if it exists) does not mention any face with an index that's at least this field's length.
+    /// * If [`FrameAttribute::Orientable`] is set, the frame must be in [*oriented representation*](Frame#oriented-representation)
+    pub faces_half_edges: Option<FacesHalfEdges>,
     
     /// An array of triples `(f, g, s)` where `f` and `g` are face IDs
     /// and `s` is a [`FaceOrder`]:
@@ -941,42 +1071,51 @@ pub struct Frame {
     ///   (e.g., they do not overlap in their interiors).
     ///
     /// **Recommended** for frames with interior-overlapping faces.
-    #[getset(get = "pub")]
-    pub(crate) face_orders: Option<Vec<(Face, Face, FaceOrder)>>,
+    /// 
+    /// # Requirements (if exists)
+    /// * No face mentioned has an index that's at least the length of [`Frame::faces_half_edges`]
+    pub face_orders: Option<Vec<(Face, Face, FaceOrder)>>,
     /// An array of triples `[e, f, s]` where `e` and `f` are edge IDs
     /// and `s` is a [`EdgeOrder`].
-    /// * [`Left`](EdgeOrder::Left) indicates that edge `e` lies locally on the *left* side of edge `f`
-    ///   (relative to edge `f`'s orientation given by `edges_vertices`)
-    /// * [`Right`](EdgeOrder::Right) indicates that edge `e` lies locally on the *right* side of edge
-    ///   `f` (relative to edge `f`'s orientation given by `edges_vertices`)
-    /// * [`Unknown`](EdgeOrder::Unknown) indicates that `e` and `f` have unknown stacking order
+    /// * [`EdgeOrder::Left`] indicates that edge `e` lies locally on the *left* side of edge `f`
+    ///   (relative to edge `f`'s orientation given by [`Frame::edges_vertices`])
+    /// * [`EdgeOrder::Right`] indicates that edge `e` lies locally on the *right* side of edge
+    ///   `f` (relative to edge `f`'s orientation given by [`Frame::edges_vertices`])
+    /// * [`EdgeOrder::Unknown`] indicates that `e` and `f` have unknown stacking order
     ///   (e.g., they do not overlap in their interiors).
     ///
     /// This property makes sense only in 2D.
     /// **Recommended** for linkage configurations with interior-overlapping edges.
-    #[getset(get = "pub")]
-    pub(crate) edge_orders: Option<Vec<(Edge, Edge, EdgeOrder)>>,
+    /// 
+    /// # Requirements (if exists)
+    /// * No edge mentioned has an index that's at least the length of [`Frame::edges_vertices`]
+    pub edge_orders: Option<Vec<(Edge, Edge, EdgeOrder)>>,
 
     /// Parent frame ID.  Intuitively, this frame (the child)
     /// is a modification (or, in general, is related to) the parent frame.
     /// This property is optional, but enables organizing frames into a tree
     /// structure.
-    #[getset(get = "pub")]
-    pub(crate) frame_parent: Option<FrameIndex>,
+    pub frame_parent: Option<FrameIndex>,
     /// If true, any properties in the parent frame
     /// (or recursively inherited from an ancestor) that is not overridden in
     /// this frame are automatically inherited, allowing you to avoid duplicated
     /// data in many cases.
     pub frame_inherit: Option<bool>,
     /// Vertex custom data (has key `vertices_*` in file)
-    #[getset(get = "pub")]
-    pub(crate) vertices_custom: IndexMap<String, TiVec<Vertex, Value>>,
+    /// 
+    /// # Requirements
+    /// * For each valid `field`, the length of `vertices_custom[field]` must be [`Frame::num_vertices`].
+    pub vertices_custom: IndexMap<String, TiVec<Vertex, Value>>,
     /// Edge custom data (has key `edges_*` in file)
-    #[getset(get = "pub")]
-    pub(crate) edges_custom: IndexMap<String, TiVec<Edge, Value>>,
+    /// 
+    /// # Requirements
+    /// * For each valid `field`, the length of `edges_custom[field]` must be the length of [`Frame::edges_vertices`].
+    pub edges_custom: IndexMap<String, TiVec<Edge, Value>>,
     /// Face custom data (has key `faces_*` in file)
-    #[getset(get = "pub")]
-    pub(crate) faces_custom: IndexMap<String, TiVec<Face, Value>>,
+    /// 
+    /// # Requirements
+    /// * For each valid `field`, the length of `faces_custom[field]` must be the length of [`Frame::faces_half_edges`].
+    pub faces_custom: IndexMap<String, TiVec<Face, Value>>,
     /// Custom data
     pub other_custom: IndexMap<String, Value>,
 }

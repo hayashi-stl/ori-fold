@@ -1,12 +1,12 @@
 use std::{cmp::{Ordering, Reverse}, collections::BinaryHeap, marker::PhantomData, mem, slice, hash::Hash};
 
 use exact_number::BasedExpr;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, indexmap};
 use nalgebra::{DVector, Dyn, RawStorage, RealField, Vector2, vector};
 use num_traits::{RefNum, Zero};
 use robust_geometry as robust;
 
-use crate::{Edge, Frame, filter::Coordinate, geom::{self, FloatOrd, LineIntersection, NumEx, SegmentIntersection, VectorView2Dyn}};
+use crate::{Edge, EdgesVerticesEx, Frame, filter::Coordinate, geom::{self, Atan2, FloatOrd, LineIntersection, NumEx, SegmentIntersection, VectorView2Dyn}};
 
 // Pseudocode for line sweep
 //
@@ -501,8 +501,8 @@ impl IntersectCoordinate for f64 {
     }
 
     /// The tricky one.
-    /// We add perpendicular serifs of length sqrt(2) * `epsilon` to each end of each segment,
-    /// then extend each main segment (not the serifs) by sqrt(1/2) * `epsilon` on each side.
+    /// We add perpendicular serifs of length `epsilon` to each end of each segment,
+    /// then extend each main segment (not the serifs) by `epsilon` on each side.
     /// Then, we remove all the serif splits.
     /// This could give erroneous splits; it is the job of the caller to merge splits close to each other.
     fn intersect_all_segments_ref<'a,
@@ -511,13 +511,17 @@ impl IntersectCoordinate for f64 {
         >(edges: impl IntoIterator<Item = E>, mapping: F, epsilon: &Self) -> Vec<(E, Vector2<Self>)> where
             for<'b> &'b Self: RefNum<Self>
     {
+        if *epsilon == 0.0 {
+            return intersect_all_segments_ref(edges, mapping, NoReportSplitters);
+        }
+
         let edges = edges.into_iter().collect::<Vec<_>>();
         let serifs = edges.iter().map(|e| {
             let [p0, p1] = mapping(e);
             let diff = p1 - p0;
             let len = diff.norm();
             // also avoid dividing by really tiny numbers, like, idk, 5e-324.
-            let unit = if len <= *epsilon { Vector2::zeros() } else { diff * *epsilon * (0.5f64).sqrt() / len };
+            let unit = if len <= *epsilon { Vector2::zeros() } else { diff * *epsilon / len };
             let perp = geom::perp_ccw(unit);
             (e.clone(), [p0 - perp, p0 - unit, p0 + perp, p1 + perp, p1 + unit, p1 - perp])
         }).collect::<IndexMap<_, _>>();
@@ -531,12 +535,58 @@ impl IntersectCoordinate for f64 {
                     4..7 => [mapping(e)[1], serifs[e][i - 1].as_view()],
                     _ => unreachable!()
                 }
-            }
+            },
+            ReportSplitters
         );
-        splits.into_iter()
-            .filter(|((_, i), _) | *i == 0)
-            .map(|((e, _), intersection)| (e, intersection))
-            .collect()
+
+        let mut split_map = indexmap!{};
+        for ((edge, splitter), at) in splits {
+            if edge.1 == 0 {
+                split_map.entry((edge.0, splitter.0)).or_insert(vec![]).push((splitter.1, at));
+            }
+        }
+
+        let mut merged_splits = vec![];
+        let merge_serifs = |ps: Vec<Vector2<f64>>, start: Vector2<f64>| -> Option<Vector2<f64>> {
+            // A continuous merging method
+            let mut total_weight = 0.0;
+            let mut sum = Vector2::zeros();
+            //println!("ps: {ps:?}, start: {start:?}, epsilon: {epsilon}");
+            for point in ps {
+                let weight = (epsilon * epsilon - (start - point).norm_squared()).max(0.0);
+                sum += point * weight;
+                total_weight += weight;
+            }
+            //println!("sum: {sum:?}, total_weight: {total_weight:?}");
+            (total_weight != 0.0).then(|| sum / total_weight)
+        };
+
+        for (edge, splitters) in split_map {
+            // Do proper serif merging
+            let main = splitters.iter().find(|(i, _)| *i == 0).map(|(_, at)| *at);
+            let left = splitters.iter()
+                .filter(|(i, _)| *i >= 1 && *i < 4)
+                .map(|(_, at)| *at)
+                .collect::<Vec<_>>();
+            let left = merge_serifs(left, mapping(&edge.1)[0].into_owned());
+            let right = splitters.iter()
+                .filter(|(i, _)| *i >= 4 && *i < 7)
+                .map(|(_, at)| *at)
+                .collect::<Vec<_>>();
+            let right = merge_serifs(right, mapping(&edge.1)[1].into_owned());
+            let mut these_splits = [left, main, right].into_iter().flat_map(|a| a.map(|a| (edge.0.clone(), a)))
+                .collect::<Vec<_>>();
+            these_splits.dedup();
+            merged_splits.extend(these_splits);
+
+            //match (left, right) {
+            //    (None, None) => { main.map(|main| merged_splits.push((edge.0, main))); },
+            //    (Some(left), None) => merged_splits.push((edge.0, left)),
+            //    (None, Some(right)) => merged_splits.push((edge.0, right)),
+            //    (Some(left), Some(right)) => merged_splits.extend([(edge.0.clone(), left), (edge.0, right)]),
+            //}
+        }
+        merged_splits
     }
 }
 
@@ -573,15 +623,58 @@ impl IntersectCoordinate for BasedExpr {
         >(edges: impl IntoIterator<Item = E>, mapping: F, _epsilon: &Self) -> Vec<(E, Vector2<Self>)> where
             for<'b> &'b Self: RefNum<Self>
     {
-        intersect_all_segments_ref(edges, mapping)
+        intersect_all_segments_ref(edges, mapping, NoReportSplitters)
+    }
+}
+
+pub trait ReportStrategy {
+    type Report<E>;
+
+    fn insert_split<E: Clone, T: Clone>(
+        &self,
+        splits: &mut Vec<(Self::Report<E>, Vector2<T>)>,
+        segment: E,
+        splitters: impl IntoIterator<Item = E>,
+        at: Vector2<T>
+    );
+}
+
+pub struct ReportSplitters;
+impl ReportStrategy for ReportSplitters {
+    type Report<E> = (E, E);
+
+    fn insert_split<E: Clone, T: Clone>(
+            &self,
+            splits: &mut Vec<(Self::Report<E>, Vector2<T>)>,
+            segment: E,
+            splitters: impl IntoIterator<Item = E>,
+            at: Vector2<T>
+        ) {
+        splits.extend(splitters.into_iter().map(|s| ((segment.clone(), s), at.clone())));
+    }
+}
+
+pub struct NoReportSplitters;
+impl ReportStrategy for NoReportSplitters {
+    type Report<E> = E;
+
+    fn insert_split<E: Clone, T: Clone>(
+            &self,
+            splits: &mut Vec<(Self::Report<E>, Vector2<T>)>,
+            segment: E,
+            _splitters: impl IntoIterator<Item = E>,
+            at: Vector2<T>
+        ) {
+        splits.push((segment, at));
     }
 }
 
 pub fn intersect_all_segments_ref<'a,
     E: Eq + Clone + 'a,
     T: IntersectCoordinate,
-    F: Fn(&E) -> [VectorView2Dyn<'a, T>; 2] + Clone
->(edges: impl IntoIterator<Item = E>, mapping: F) -> Vec<(E, Vector2<T>)> where
+    F: Fn(&E) -> [VectorView2Dyn<'a, T>; 2] + Clone,
+    R: ReportStrategy
+>(edges: impl IntoIterator<Item = E>, mapping: F, report: R) -> Vec<(R::Report<E>, Vector2<T>)> where
     for<'b> &'b T: RefNum<T>
 {
     let mut events = BinaryHeap::new();
@@ -631,7 +724,12 @@ pub fn intersect_all_segments_ref<'a,
         curr_segments.reverse();
         if let Some(time_pos) = time.clone().actual_pos() {
             for s in curr_segments.segments() {
-                splits.push((s.clone(), time_pos.clone()));
+                report.insert_split(&mut splits, s.clone(),
+                    curr_segments.segments().iter().filter_map(|s2| (s != s2).then_some(s2.clone()))
+                        .chain(curr_events.iter().flat_map(|ev|
+                            ev.segment_if_end().or(ev.segment_if_start()).cloned())),
+                    time_pos.clone());
+                //splits.push((s.clone(), time_pos.clone()));
             }
         }
 
@@ -674,18 +772,38 @@ impl Frame {
     ///     wherever it intersects a boundary point of the other edge. Then duplicate edges are merged.
     /// * If an edge intersects a boundary point of another edge, the first edge is split at that boundary point.
     /// * If two non-collinear edges intersect in their interiors, they're both split at the point of intersection.
-    pub fn intersect_all_edges_generic<T: NumEx + Coordinate>(&mut self, epsilon: &T) where
+    pub fn intersect_all_edges<T: NumEx + Coordinate>(&mut self, epsilon: &T) where
         for<'a> &'a T: RefNum<T>
     {
-        let vertices_coords = T::vertices_coords(self).as_ref().unwrap(); // required by spec
+        let vertices_coords = T::frame_to_vertices_coords(self).as_ref().unwrap(); // required by spec
         assert_eq!(vertices_coords.nrows(), 2, "intersect_all_edges requires 2D coordinates");
         let edges_vertices = self.edges_vertices.as_ref().unwrap(); // required by spec
         let splits = T::intersect_all_segments_ref(
             (0..edges_vertices.len()).map(Edge),
             |&e| edges_vertices[e].map(|v| vertices_coords.fixed_view::<2, 1>(0, v.0)),
-            epsilon
+            &(epsilon / (T::one() + T::one()))
         );
         self.split_edges(splits.into_iter().map(|(e, at)| (e, DVector::from_vec(at.data.0[0].to_vec()))));
+        self.merge_nearby_vertices(epsilon);
+        self.merge_doubled_edges();
+    }
+
+    pub fn try_into_planar_with_faces<T: NumEx + Coordinate>(mut self, epsilon: &T) -> Option<Self> where
+        Vector2<T>: Atan2,
+        for<'a> &'a T: RefNum<T>
+    {
+        todo!()
+        //self.intersect_all_edges(epsilon);
+        //// Now we sort points and make faces
+        //let vh = self.vertices_half_edges.as_mut().unwrap();
+        //let ev = self.edges_vertices.as_ref().unwrap();
+        //let coords = T::vertices_coords(&self).as_ref().unwrap();
+        //for (v, hs) in vh.iter_mut_enumerated() {
+        //    geom::sort_by_angle_ref(hs, coords.fixed_view::<2, 1>(0, v.0),
+        //        |&h| coords.fixed_view::<2, 1>(0, ev.at(h)[1].0));
+        //}
+        
+        //Some(self)
     }
 }
 
@@ -693,11 +811,12 @@ impl Frame {
 mod test {
     use std::fmt::Debug;
 
-    use approx::relative_ne;
+    use approx::{AbsDiffEq, relative_ne};
     use exact_number::{BasedExpr};
     use nalgebra::{vector, Vector2};
 
-    use crate::{filter::intersect::intersect_all_segments_ref, geom::FloatOrd};
+    use crate::{Frame, filter::intersect::{NoReportSplitters, ReportSplitters, intersect_all_segments_ref}, geom::FloatOrd};
+    use super::IntersectCoordinate;
 
     macro_rules! exact_vec_2 {
         (($($a:tt)*), ($($b:tt)*)$(,)?) => {
@@ -733,10 +852,10 @@ mod test {
             .collect::<Vec<_>>()
     }
 
-    fn assert_splits<E: Debug + Eq>(splits: &Vec<(E, Vector2<f64>)>, expected: &Vec<(E, Vector2<f64>)>) {
+    fn assert_splits<E: Debug + Eq>(splits: &Vec<(E, Vector2<f64>)>, expected: &Vec<(E, Vector2<f64>)>, epsilon: f64) {
         if splits.len() != expected.len() || splits.iter().zip(expected.iter())
             .any(|((s1e, s1v), (s2e, s2v))|
-                s1e != s2e || relative_ne!(s1v, s2v))
+                s1e != s2e || s1v.abs_diff_ne(s2v, epsilon))
         {
             panic!("splits assertion failed: {splits:?} is not close enough to {expected:?}")
         }
@@ -755,12 +874,12 @@ mod test {
             [2, 3],
         ];
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         assert_eq!(splits, vec![]);
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
         assert_eq!(splits, vec![]);
     }
 
@@ -783,7 +902,7 @@ mod test {
             [6, 7],
         ];
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         assert_eq!(splits, vec![
             (1, exact_vec_2![(1), (1)]),
             (2, exact_vec_2![(4), (1)]),
@@ -791,10 +910,10 @@ mod test {
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
         assert_eq!(splits, vec![
-            (1, vector![1.0, 1.0]),
-            (2, vector![4.0, 1.0]),
+            ((1, 0), vector![1.0, 1.0]),
+            ((2, 3), vector![4.0, 1.0]),
         ]);
     }
 
@@ -811,7 +930,7 @@ mod test {
             [2, 3],
         ];
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         assert_eq!(splits, vec![
             (0, exact_vec_2![(2/3), (2/3)]),
             (1, exact_vec_2![(2/3), (2/3)]),
@@ -819,11 +938,11 @@ mod test {
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
         assert_splits(&splits, &vec![
-            (0, vector![2.0 / 3.0, 2.0 / 3.0]),
-            (1, vector![2.0 / 3.0, 2.0 / 3.0]),
-        ]);
+            ((0, 1), vector![2.0 / 3.0, 2.0 / 3.0]),
+            ((1, 0), vector![2.0 / 3.0, 2.0 / 3.0]),
+        ], f64::EPSILON * 4.0);
     }
 
     #[test]
@@ -842,7 +961,7 @@ mod test {
             [4, 5],
         ];
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         assert_eq!(splits, vec![
             (0, exact_vec_2![(1/2), (1/2)]),
             (1, exact_vec_2![(1/2), (1/2)]),
@@ -851,11 +970,14 @@ mod test {
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
         assert_eq!(splits, vec![
-            (0, vector![0.5, 0.5]),
-            (1, vector![0.5, 0.5]),
-            (2, vector![0.5, 0.5]),
+            ((0, 1), vector![0.5, 0.5]),
+            ((0, 2), vector![0.5, 0.5]),
+            ((1, 0), vector![0.5, 0.5]),
+            ((1, 2), vector![0.5, 0.5]),
+            ((2, 0), vector![0.5, 0.5]),
+            ((2, 1), vector![0.5, 0.5]),
         ]);
     }
 
@@ -875,7 +997,7 @@ mod test {
             [4, 5], // this segment stops in the cove created by segments 0 and 1
         ];
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         assert_eq!(splits, vec![
             (0, exact_vec_2![(1/2), (1/2)]),
             (1, exact_vec_2![(1/2), (1/2)]),
@@ -883,10 +1005,10 @@ mod test {
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
         assert_eq!(splits, vec![
-            (0, vector![0.5, 0.5]),
-            (1, vector![0.5, 0.5]),
+            ((0, 1), vector![0.5, 0.5]),
+            ((1, 0), vector![0.5, 0.5]),
         ]);
     }
 
@@ -915,7 +1037,7 @@ mod test {
             [10, 11],
         ];
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         assert_eq!(splits, vec![
             (0, exact_vec_2![(1/2), (1/2)]),
             (1, exact_vec_2![(1/2), (1/2)]),
@@ -925,12 +1047,16 @@ mod test {
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
         assert_eq!(splits, vec![
-            (0, vector![0.5, 0.5]),
-            (1, vector![0.5, 0.5]),
-            (3, vector![3.5, 0.5]),
-            (4, vector![3.5, 0.5]),
+            ((0, 1), vector![0.5, 0.5]),
+            ((0, 2), vector![0.5, 0.5]),
+            ((1, 0), vector![0.5, 0.5]),
+            ((1, 2), vector![0.5, 0.5]),
+            ((3, 4), vector![3.5, 0.5]),
+            ((3, 5), vector![3.5, 0.5]),
+            ((4, 3), vector![3.5, 0.5]),
+            ((4, 5), vector![3.5, 0.5]),
         ]);
     }
 
@@ -953,7 +1079,7 @@ mod test {
             [6, 7],
         ];
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         assert_eq!(splits, vec![
             (1, exact_vec_2![(0), (1)]),
             (1, exact_vec_2![(0), (2)]),
@@ -962,11 +1088,12 @@ mod test {
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
         assert_eq!(splits, vec![
-            (1, vector![0.0, 1.0]),
-            (1, vector![0.0, 2.0]),
-            (2, vector![0.0, 3.0]),
+            ((1, 0), vector![0.0, 1.0]),
+            ((1, 2), vector![0.0, 2.0]),
+            ((2, 1), vector![0.0, 3.0]),
+            ((2, 3), vector![0.0, 3.0]),
         ]);
     }
 
@@ -1006,7 +1133,7 @@ mod test {
             [14, 15]
         ];
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         assert_eq!(splits.len(), segments.len());
     }
 
@@ -1022,7 +1149,7 @@ mod test {
             .chain((0..=size).map(|i| [2 * (size + 1 + i), 2 * (size + 1 + i) + 1]))
             .collect::<Vec<_>>();
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         let expected = canonicalize_exact((0..=size).flat_map(|y| (0..=size).flat_map(move |x| {
             let mut result = vec![];
             if x > 0 && x < size {
@@ -1037,8 +1164,17 @@ mod test {
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
-        let expected = round_splits(expected);
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
+        let expected = canonicalize_f64((0..=size).flat_map(|y| (0..=size).flat_map(move |x| {
+            let mut result = vec![];
+            if x > 0 && x < size {
+                result.push(((y, size + 1 + x), vector![x as f64, y as f64]));
+            }
+            if y > 0 && y < size {
+                result.push(((size + 1 + x, y), vector![x as f64, y as f64]))
+            }
+            result
+        })).collect::<Vec<_>>());
         assert_eq!(splits, expected);
     }
 
@@ -1054,7 +1190,7 @@ mod test {
             .chain((0..=size).map(|i| [2 * (size + 1 + i), 2 * (size + 1 + i) + 1]))
             .collect::<Vec<_>>();
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         let expected = canonicalize_exact((0..=size).flat_map(|y| (0..=size).flat_map(move |x| {
             let mut result = vec![];
             if x > 0 && x < size {
@@ -1069,8 +1205,17 @@ mod test {
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
-        let expected = round_splits(expected);
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
+        let expected = canonicalize_f64((0..=size).flat_map(|y| (0..=size).flat_map(move |x| {
+            let mut result = vec![];
+            if x > 0 && x < size {
+                result.push(((y, size + 1 + x), vector![x as f64, y as f64]));
+            }
+            if y > 0 && y < size {
+                result.push(((size + 1 + x, y), vector![x as f64, y as f64]))
+            }
+            result
+        })).collect::<Vec<_>>());
         assert_eq!(splits, expected);
     }
 
@@ -1091,7 +1236,7 @@ mod test {
             [0, 3], [1, 4], [2, 5],
         ];
         let splits = canonicalize_exact(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
+            |s| segments[*s].map(|v| vectors[v].as_view()), NoReportSplitters));
         let expected = vec![
             (6, exact_vec_2![(0 + 0 sqrt 3), (0 + 1/3 sqrt 3)]),
             (6, exact_vec_2![(1/4 + 0 sqrt 3), (0 + 1/4 sqrt 3)]),
@@ -1125,12 +1270,117 @@ mod test {
 
         let vectors = round_vectors(vectors);
         let splits = canonicalize_f64(intersect_all_segments_ref(0..segments.len(),
-            |s| segments[*s].map(|v| vectors[v].as_view())));
-        let expected = round_splits(expected);
+            |s| segments[*s].map(|v| vectors[v].as_view()), ReportSplitters));
         // The center intersection is the only one where >2 segments intersect,
         // and the way the coordinates are set up, (and the rounding mode of BasedExpr::round_to_nearest_f64),
         // those segments should intersect exactly at the same point,
         // so there are only 3 splits there, not 6.
-        assert_splits(&splits, &expected);
+        let expected = vec![
+            ((6, 7), exact_vec_2![(0 + 0 sqrt 3), (0 + 1/3 sqrt 3)]),
+            ((6, 11), exact_vec_2![(1/2 + 0 sqrt 3), (0 + 1/6 sqrt 3)]),
+            ((6, 13), exact_vec_2![(1/4 + 0 sqrt 3), (0 + 1/4 sqrt 3)]),
+            ((7, 6), exact_vec_2![(0 + 0 sqrt 3), (0 + 1/3 sqrt 3)]),
+            ((7, 8), exact_vec_2![(-1/2 + 0 sqrt 3), (0 + 1/6 sqrt 3)]),
+            ((7, 14), exact_vec_2![(-1/4 + 0 sqrt 3), (0 + 1/4 sqrt 3)]),
+            ((8, 7), exact_vec_2![(-1/2 + 0 sqrt 3), (0 + 1/6 sqrt 3)]),
+            ((8, 9), exact_vec_2![(-1/2 + 0 sqrt 3), (0 - 1/6 sqrt 3)]),
+            ((8, 12), exact_vec_2![(-1/2 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+            ((9, 8), exact_vec_2![(-1/2 + 0 sqrt 3), (0 - 1/6 sqrt 3)]),
+            ((9, 10), exact_vec_2![(0 + 0 sqrt 3), (0 - 1/3 sqrt 3)]),
+            ((9, 13), exact_vec_2![(-1/4 + 0 sqrt 3), (0 - 1/4 sqrt 3)]),
+            ((10, 9), exact_vec_2![(0 + 0 sqrt 3), (0 - 1/3 sqrt 3)]),
+            ((10, 11), exact_vec_2![(1/2 + 0 sqrt 3), (0 - 1/6 sqrt 3)]),
+            ((10, 14), exact_vec_2![(1/4 + 0 sqrt 3), (0 - 1/4 sqrt 3)]),
+            ((11, 6), exact_vec_2![(1/2 + 0 sqrt 3), (0 + 1/6 sqrt 3)]),
+            ((11, 10), exact_vec_2![(1/2 + 0 sqrt 3), (0 - 1/6 sqrt 3)]),
+            ((11, 12), exact_vec_2![(1/2 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+            ((12, 8), exact_vec_2![(-1/2 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+            ((12, 11), exact_vec_2![(1/2 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+            ((12, 13), exact_vec_2![(0 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+            ((12, 14), exact_vec_2![(0 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+            ((13, 6), exact_vec_2![(1/4 + 0 sqrt 3), (0 + 1/4 sqrt 3)]),
+            ((13, 9), exact_vec_2![(-1/4 + 0 sqrt 3), (0 - 1/4 sqrt 3)]),
+            ((13, 12), exact_vec_2![(0 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+            ((13, 14), exact_vec_2![(0 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+            ((14, 7), exact_vec_2![(-1/4 + 0 sqrt 3), (0 + 1/4 sqrt 3)]),
+            ((14, 10), exact_vec_2![(1/4 + 0 sqrt 3), (0 - 1/4 sqrt 3)]),
+            ((14, 12), exact_vec_2![(0 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+            ((14, 13), exact_vec_2![(0 + 0 sqrt 3), (0 + 0 sqrt 3)]),
+        ].into_iter().map(|((e, f), vec)| ((e, f), vec.map(|c| c.round_to_nearest_f64()))).collect::<Vec<_>>();
+        assert_splits(&splits, &expected, f64::EPSILON * 4.0);
+    }
+
+    #[test]
+    fn test_intersect_all_segments_f64() {
+        let vectors = vec![
+            vector![0.0, 0.0],
+            vector![3.0, 0.0],
+            vector![1.0, 0.0],
+            vector![2.0, 0.0],
+            vector![1.0, 0.01],
+            vector![2.0, 0.01],
+            vector![2.0, -0.01],
+            vector![2.0, -0.02],
+            vector![1.0, 1.01],
+            vector![2.0, 1.01],
+        ];
+        let epsilon = 1.0 / 64.0; // exactly representable in a float to test exact cases
+
+        // Truly collinear
+        let segments = vec![[0, 1], [2, 3]];
+        let splits = canonicalize_f64(f64::intersect_all_segments_ref(
+            0..segments.len(), |s| segments[*s].map(|p| vectors[p].as_view()), &0.0,
+        ));
+        // This one had better be exact
+        assert_eq!(splits, vec![
+            (0, vector![1.0, 0.0]),
+            (0, vector![2.0, 0.0]),
+        ]);
+        let splits = canonicalize_f64(f64::intersect_all_segments_ref(
+            0..segments.len(), |s| segments[*s].map(|p| vectors[p].as_view()), &epsilon,
+        ));
+        // even if ε = 1/64
+        assert_eq!(splits, vec![
+            (0, vector![1.0, 0.0]),
+            (0, vector![2.0, 0.0]),
+        ]);
+
+        // "Collinear" (closer than ε/2)
+        let segments = vec![[0, 1], [4, 5]];
+        let splits = canonicalize_f64(f64::intersect_all_segments_ref(
+            0..segments.len(), |s| segments[*s].map(|p| vectors[p].as_view()), &(epsilon / 2.0),
+        ));
+        assert_eq!(splits, vec![]); // ε too small
+        let splits = canonicalize_f64(f64::intersect_all_segments_ref(
+            0..segments.len(), |s| segments[*s].map(|p| vectors[p].as_view()), &epsilon,
+        ));
+        assert_splits(&splits, &vec![
+            (0, vector![1.0, 0.0]),
+            (0, vector![2.0, 0.0]),
+        ], epsilon);
+
+        // "Collinear" (closer than ε/2). There's an intersection point in between;
+        // don't bother removing it because it complicates things too much
+        let segments = vec![[0, 1], [4, 6]];
+        let splits = canonicalize_f64(f64::intersect_all_segments_ref(
+            0..segments.len(), |s| segments[*s].map(|p| vectors[p].as_view()), &epsilon,
+        ));
+        assert_splits(&splits, &vec![
+            (0, vector![1.0, 0.0]),
+            (0, vector![1.5, 0.0]),
+            (0, vector![2.0, 0.0]),
+            (1, vector![1.5, 0.0]),
+        ], epsilon);
+
+        // Not quite collinear. Removing the intermediate intersection point is important.
+        let segments = vec![[0, 1], [4, 7]];
+        let splits = canonicalize_f64(f64::intersect_all_segments_ref(
+            0..segments.len(), |s| segments[*s].map(|p| vectors[p].as_view()), &epsilon,
+        ));
+        assert_splits(&splits, &vec![
+            (0, vector![1.0, 0.0]),
+            (0, vector![4.0 / 3.0, 0.0]),
+            (1, vector![4.0 / 3.0, 0.0]),
+        ], epsilon);
     }
 }

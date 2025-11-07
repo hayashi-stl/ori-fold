@@ -5,10 +5,11 @@ use indexmap::{indexmap, map::Entry, IndexMap};
 use nalgebra::{DMatrix, DVector, Dim, Dyn, Scalar, VectorView};
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{EdgeDatas, FaceDatas, VertexDatas, filter::intersect::IntersectCoordinate, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::FloatOrd};
+use crate::{EdgeDatas, FaceDatas, VertexDatas, filter::{intersect::IntersectCoordinate, split_merge::MergeCoordinate}, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::FloatOrd};
 
 pub mod intersect;
 pub mod split_merge;
+pub mod permutation;
 
 #[derive(Clone, Copy)]
 struct SwapRemove;
@@ -62,7 +63,7 @@ impl RemoveStrategy for ShiftRemove {
     }
 }
 
-pub trait Coordinate: Sized + IntersectCoordinate {
+pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate {
     type Sortable: Ord;
     type SortableRef<'a>: Ord;
 
@@ -73,8 +74,8 @@ pub trait Coordinate: Sized + IntersectCoordinate {
     //    Self::to_sortable_slice(vector.data.into_slice())
     //}
 
-    fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>>;
-    fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>>;
+    fn frame_to_vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>>;
+    fn frame_to_vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>>;
 }
 
 impl Coordinate for f64 {
@@ -93,8 +94,8 @@ impl Coordinate for f64 {
     //    unsafe { mem::transmute(slice) }
     //}
 
-    fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_f64 }
-    fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_f64 }
+    fn frame_to_vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_f64 }
+    fn frame_to_vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_f64 }
 }
 
 impl Coordinate for BasedExpr {
@@ -112,8 +113,8 @@ impl Coordinate for BasedExpr {
     //    slice
     //}
 
-    fn vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_exact }
-    fn vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_exact }
+    fn frame_to_vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_exact }
+    fn frame_to_vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_exact }
 }
 
 //pub trait SliceEx {
@@ -310,7 +311,7 @@ impl Frame {
     pub fn add_vertex_like<T: Coordinate>(&mut self, like: Vertex, at: DVector<T>) -> Vertex {
         let data = self.vertex_data(like);
         let v = self.add_vertex(data);
-        T::vertices_coords_mut(self).as_mut().map(|vc| set_column(vc, v.0, at));
+        T::frame_to_vertices_coords_mut(self).as_mut().map(|vc| set_column(vc, v.0, at));
         v
     }
 

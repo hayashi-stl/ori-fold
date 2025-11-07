@@ -1,3 +1,4 @@
+use core::f64;
 use std::{hash::Hash, mem};
 
 use exact_number::BasedExpr;
@@ -11,11 +12,14 @@ pub trait MergeCoordinate: Sized + Scalar {
             Self: 'a,
             DefaultAllocator: Allocator<D>;
 
+    type MapValue;
+
     fn hash<'a, D: Dim>(vector: VectorView<'a, Self, D, U1, Dyn>, epsilon: &Self) -> Self::Hash<'a, D> where
             DefaultAllocator: Allocator<D>;
 
     /// Finds a vertex in `map` closer than `epsilon` to `key`, or inserts `vertex` into the map and returns that.
-    fn at_or_insert<'a, D: Dim>(map: &mut IndexMap<Self::Hash<'a, D>, Vertex>, key: VectorView<'a, Self, D, U1, Dyn>, vertex: Vertex, epsilon: &Self) -> Vertex where
+    fn at_or_insert<'a, D: Dim>(map: &mut IndexMap<Self::Hash<'a, D>, Self::MapValue>, mapping: impl FnMut(Vertex) -> VectorView<'a, Self, D, U1, Dyn>,
+        vertex: Vertex, epsilon: &Self) -> Vertex where
             DefaultAllocator: Allocator<D>;
 }
 
@@ -23,6 +27,8 @@ impl MergeCoordinate for f64 {
     type Hash<'a, D: Dim> = OVector<FloatOrd<f64>, D> where
             Self: 'a,
             DefaultAllocator: Allocator<D>;
+
+    type MapValue = Vec<Vertex>;
 
     fn hash<'a, D: Dim>(vector: VectorView<'a, Self, D, U1, Dyn>, epsilon: &Self) -> Self::Hash<'a, D> where
             DefaultAllocator: Allocator<D>
@@ -34,14 +40,52 @@ impl MergeCoordinate for f64 {
         }
     }
 
-    fn at_or_insert<'a, D: Dim>(map: &mut IndexMap<Self::Hash<'a, D>, Vertex>, key: VectorView<'a, Self, D, U1, Dyn>, vertex: Vertex, epsilon: &Self) -> Vertex where
+    fn at_or_insert<'a, D: Dim>(map: &mut IndexMap<Self::Hash<'a, D>, Self::MapValue>, mut mapping: impl FnMut(Vertex) -> VectorView<'a, Self, D, U1, Dyn>,
+        vertex: Vertex, epsilon: &Self) -> Vertex where
                 DefaultAllocator: Allocator<D>
     {
+        let key = mapping(vertex);
         if *epsilon == 0.0 {
-            return *map.entry(Self::hash(key, epsilon)).or_insert(vertex);
+            return map.entry(Self::hash(key, epsilon)).or_insert(vec![vertex])[0];
         }
 
-        todo!()
+        let mut closest = None;
+        let mut dist2 = f64::INFINITY;
+        let mut diff = key.map(|_| -1);
+        let hash = Self::hash(key.clone(), epsilon);
+        loop {
+            let curr_hash = hash.zip_map(&diff, |a, b| FloatOrd(a.0 + b as f64));
+            if let Some(vec) = map.get(&curr_hash) {
+                for &v in vec {
+                    let curr_dist2 = (key - mapping(v)).norm_squared();
+                    if curr_dist2 < dist2 {
+                        dist2 = curr_dist2;
+                        closest = Some(v);
+                    }
+                }
+            }
+
+            // Get next neighbor
+            let mut overflowed = true;
+            for value in &mut diff {
+                *value += 1;
+                if *value == 2 {
+                    *value = -1;
+                } else {
+                    overflowed = false;
+                    break;
+                }
+            }
+            if overflowed { break }
+        }
+
+        if dist2 <= *epsilon {
+            closest.expect("epsilon should not be infinity")
+        } else {
+            let vec = map.entry(hash).or_insert(vec![]);
+            vec.push(vertex);
+            vertex
+        }
     }
 }
 
@@ -49,6 +93,8 @@ impl MergeCoordinate for BasedExpr {
     type Hash<'a, D: Dim> = VectorView<'a, Self, D, U1, Dyn> where
             Self: 'a,
             DefaultAllocator: Allocator<D>;
+
+    type MapValue = Vertex;
 
     /// `epsilon` is not used for exact coordinates.
     fn hash<'a, D: Dim>(vector: VectorView<'a, Self, D, U1, Dyn>, _epsilon: &Self) -> Self::Hash<'a, D> where
@@ -58,27 +104,28 @@ impl MergeCoordinate for BasedExpr {
     }
 
     /// `epsilon` is not used for exact coordinates.
-    fn at_or_insert<'a, D: Dim>(map: &mut IndexMap<Self::Hash<'a, D>, Vertex>, key: VectorView<'a, Self, D, U1, Dyn>, vertex: Vertex, epsilon: &Self) -> Vertex where
+    fn at_or_insert<'a, D: Dim>(map: &mut IndexMap<Self::Hash<'a, D>, Self::MapValue>, mut mapping: impl FnMut(Vertex) -> VectorView<'a, Self, D, U1, Dyn>,
+        vertex: Vertex, epsilon: &Self) -> Vertex where
                 DefaultAllocator: Allocator<D>
     {
-        *map.entry(key).or_insert(vertex)
+        *map.entry(mapping(vertex)).or_insert(vertex)
     }
 }
 
 pub struct PointMerger<'a, T: 'a + MergeCoordinate, D: Dim> where
         DefaultAllocator: Allocator<D>
 {
-    points: IndexMap<T::Hash<'a, D>, Vertex>,
+    points: IndexMap<T::Hash<'a, D>, T::MapValue>,
     merge_map: IndexMap<Vertex, Vertex>,
 }
 
 impl<'a, T: 'a + MergeCoordinate, D: Dim> PointMerger<'a, T, D> where
         DefaultAllocator: Allocator<D>
 {
-    pub fn new(vertices: impl IntoIterator<Item = Vertex>, mut mapping: impl FnMut(Vertex) -> VectorView<'a, T, D, U1, Dyn>, epsilon: T) -> Self {
+    pub fn new(vertices: impl IntoIterator<Item = Vertex>, mapping: impl FnMut(Vertex) -> VectorView<'a, T, D, U1, Dyn> + Clone, epsilon: &T) -> Self {
         let mut this = Self { points: indexmap!{}, merge_map: indexmap!{} };
         for vertex in vertices {
-            let to = T::at_or_insert(&mut this.points, mapping(vertex), vertex, &epsilon);
+            let to = T::at_or_insert(&mut this.points, mapping.clone(), vertex, &epsilon);
             this.merge_map.insert(vertex, to);
         }
         this
@@ -87,6 +134,16 @@ impl<'a, T: 'a + MergeCoordinate, D: Dim> PointMerger<'a, T, D> where
     /// Extracts the merge map (where each vertex should get merged into)
     pub fn into_merge_map(self) -> IndexMap<Vertex, Vertex> {
         self.merge_map
+    }
+
+    /// Extracts the sets of vertices that need to be merged together
+    pub fn into_merge_map_and_sets(self) -> (IndexMap<Vertex, Vertex>, Vec<Vec<Vertex>>) {
+        let merge_map = self.into_merge_map();
+        let mut sets = indexmap!{};
+        for (&vertex, &target) in &merge_map {
+            sets.entry(target).or_insert(vec![]).push(vertex);
+        }
+        (merge_map, sets.into_values().collect::<Vec<_>>())
     }
 }
 
@@ -161,7 +218,7 @@ impl Frame {
     }
 
     pub fn split_edges<T: NumEx + Coordinate>(&mut self, splits: impl IntoIterator<Item = (Edge, DVector<T>)>) {
-        let vc = T::vertices_coords(self).as_ref();
+        let vc = T::frame_to_vertices_coords(self).as_ref();
         let ev = self.edges_vertices.as_ref().unwrap(); // needs to exist to split edges
         let mut splits = splits.into_iter().collect::<Vec<_>>();
 
@@ -258,6 +315,103 @@ impl Frame {
 
         // Whew, after all that topology fixing, we can *finally* remove the vertex
         self.swap_remove_vertex(dbg!(vertex));
+    }
+
+    /// Merges vertices that are at most `epsilon` apart.
+    /// Requires the appropriate vertex coordinates to exist.
+    pub fn merge_nearby_vertices<T: NumEx + Coordinate>(&mut self, epsilon: &T) {
+        let coords = T::frame_to_vertices_coords(self).as_ref().unwrap(); // required by spec
+        let merger = PointMerger::new(
+            (0..self.num_vertices).map(Vertex),
+            |v| coords.column(v.0),
+            epsilon
+        );
+        let (mut merge_map, sets) = merger.into_merge_map_and_sets();
+        // Sort merge_map so that if a merge happens, no vertex after
+        // the merged one will be involved on either side of a merge.
+        for set in sets {
+            let target = *set.iter().min().unwrap();
+            for v in set {
+                *merge_map.get_mut(&v).unwrap() = target;
+            }
+        }
+        merge_map.sort_by_key(|_, v| *v);
+
+        for (target, vertex) in merge_map.into_iter().rev() {
+            self.merge_two_vertices(vertex, target);
+        }
+    }
+
+    /// Merges `edge` into `target`, swap-removing `edge`.
+    /// `edge` and `target` must be different edges connecting
+    /// the same two vertices.
+    /// 
+    /// This effectively replaces all references to `edge` with `target`,
+    /// and then deletes self-loops.
+    /// 
+    /// This might not preserve manifold-ness. Even if it preserves manifoldness,
+    /// it might not preserve orientedness. If it doesn't preserve orientedness,
+    /// the flag is cleared without an attempt to recover orientedness.
+    /// 
+    /// Only edge indices get affected here, as faces will not be removed,
+    /// even if this operation causes a face to go back and forth along the same edge.
+    pub fn merge_two_edges(&mut self, edge: Edge, target: Edge) {
+        let ev = self.edges_vertices.as_ref().expect("missing edge data");
+        // Get the parallel half-edges
+        let h_edge = edge.split()[0];
+        let mut target = target.split()[0];
+        if ev.at(h_edge) != ev.at(target) { target.flip(); }
+        if ev.at(h_edge) != ev.at(target) {
+            panic!("cannot merge {edge} and {}; vertices are not shared", target.edge());
+        }
+
+        if let Some(fh) = self.faces_half_edges.as_mut() {
+            // All faces using `h_edge` or its flipped version must use `target` or its flipped version instead, respectively
+            let ec = self.edges_face_corners.as_mut().unwrap();
+            let mut lists = vec![];
+            for (cs, target) in ec.pair_at_mut(h_edge).into_iter().zip([target, target.flipped()]) {
+                for c in cs.iter() {
+                    *fh.at_mut(*c) = target;
+                }
+                lists.push(mem::take(cs));
+            }
+            ec.at_mut(target.flipped()).extend(lists.pop().unwrap());
+            ec.at_mut(target).extend(lists.pop().unwrap());
+        }
+
+        // Fix orientation of vertices of merged-into edge, unless no longer a manifold
+        let ev = self.edges_vertices.as_ref().expect("missing edge data");
+        let vh = self.vertices_half_edges.as_ref().unwrap();
+        let hs = ev.at(target).map(|v| &vh[v]).into_iter().flatten().copied().collect::<Vec<_>>();
+        self.fix_manifold_attributes_on_half_edges(hs);
+
+        self.swap_remove_edge(edge);
+    }
+
+    /// Merges all doubled edges in this frame.
+    pub fn merge_doubled_edges(&mut self) {
+        let ev = if let Some(ev) = self.edges_vertices.as_ref() { ev } else { return };
+
+        // Create map mapping vertex pairs to edges that use them
+        let mut edges_used = indexmap!{};
+        for (e, vs) in ev.iter_enumerated() {
+            let mut vs = *vs;
+            vs.sort();
+            edges_used.entry(vs).or_insert(vec![]).push(e);
+        }
+        // Map each edge to the lowest-index one in its group
+        let mut merges = edges_used.into_values()
+            .flat_map(|es| {
+                let min = *es.iter().min().unwrap();
+                es.into_iter().map(move |e| (e, min))
+            })
+            .collect::<Vec<_>>();
+        merges.sort();
+        merges.reverse();
+
+        for (edge, target) in merges {
+            self.merge_two_edges(edge, target);
+        }
     }
 }
 
@@ -683,7 +837,7 @@ mod test {
         ];
         // One point
         let map = PointMerger::<f64, U2>::new(
-            vec![V(2)], |v| positions[v].as_view(), 0.0)
+            vec![V(2)], |v| positions[v].as_view(), &0.0)
             .into_merge_map();
         assert_eq!(map, indexmap! {
             V(2) => V(2)
@@ -691,7 +845,7 @@ mod test {
 
         // Multiple points, no epsilon
         let map = PointMerger::<f64, U2>::new(
-            vec![V(0), V(1), V(2), V(3)], |v| positions[v].as_view(), 0.0)
+            vec![V(0), V(1), V(2), V(3)], |v| positions[v].as_view(), &0.0)
             .into_merge_map();
         assert_eq!(map, indexmap! {
             V(0) => V(0),
@@ -702,7 +856,7 @@ mod test {
 
         // Multiple points, some epsilon
         let map = PointMerger::<f64, U2>::new(
-            vec![V(0), V(1), V(2), V(3)], |v| positions[v].as_view(), 0.07)
+            vec![V(0), V(1), V(2), V(3)], |v| positions[v].as_view(), &0.07)
             .into_merge_map();
         assert_eq!(map, indexmap! {
             V(0) => V(0),
@@ -729,7 +883,7 @@ mod test {
         // Check the neighbors
         let map = PointMerger::<f64, U2>::new(
             (0..positions.len()).map(V),
-            |v| positions[v].as_view(), 1.0)
+            |v| positions[v].as_view(), &1.0)
             .into_merge_map();
         assert_eq!(map, indexmap! {
             V(0) => V(0),
@@ -746,5 +900,95 @@ mod test {
             V(11) => V(11),
             V(12) => V(12),
         });
+    }
+
+    #[test]
+    fn test_merge_two_edges() {
+        // No faces. Just a 2-star with a doubled edge.
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(0), H(2), H(4)],
+            vec![H(1)],
+            vec![H(3), H(5)],
+        ]), None);
+        frame.merge_two_edges(E(1), E(2));
+        assert_eq!(frame.frame_attributes, indexset![FrameAttribute::Manifold, FrameAttribute::Orientable]);
+        assert_eq!(frame.edges_vertices, Some(ti_vec![
+            [V(0), V(1)],
+            [V(0), V(2)],
+        ]));
+        frame.assert_topology_consistent();
+
+        // Okay, now one of the edges is winded the other way.
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(0), H(2), H(5)],
+            vec![H(1)],
+            vec![H(3), H(4)],
+        ]), None);
+        frame.merge_two_edges(E(1), E(2));
+        assert_eq!(frame.frame_attributes, indexset![FrameAttribute::Manifold, FrameAttribute::Orientable]);
+        assert_eq!(frame.edges_vertices, Some(ti_vec![
+            [V(0), V(1)],
+            [V(2), V(0)],
+        ]));
+        frame.assert_topology_consistent();
+
+        // A simple square with an extra edge
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(8), H(7), H(0)],
+            vec![H(1), H(2), H(9)],
+            vec![H(3), H(4)],
+            vec![H(5), H(6)],
+        ]), Some(ti_vec![
+            vec![H(7), H(5), H(3), H(1)],
+        ]));
+        frame.merge_two_edges(E(0), E(4));
+        assert_eq!(frame.frame_attributes, indexset![FrameAttribute::Manifold, FrameAttribute::Orientable]);
+        assert_eq!(frame.edges_vertices, Some(ti_vec![
+            [V(0), V(1)],
+            [V(1), V(2)],
+            [V(2), V(3)],
+            [V(3), V(0)],
+        ]));
+        assert_eq!(frame.faces_half_edges, Some(ti_vec![
+            vec![H(7), H(5), H(3), H(1)],
+        ]));
+        frame.assert_topology_consistent();
+
+        // A simple square with an extra edge. Now there's a face using that edge.
+        // Which means it stops being a manifold.
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(8), H(7), H(0)],
+            vec![H(1), H(2), H(9)],
+            vec![H(3), H(4)],
+            vec![H(5), H(6)],
+        ]), Some(ti_vec![
+            vec![H(7), H(5), H(3), H(1)],
+            vec![H(9), H(0)],
+        ]));
+        frame.merge_two_edges(E(0), E(4));
+        assert_eq!(frame.frame_attributes, indexset![]);
+        assert_eq!(frame.edges_vertices, Some(ti_vec![
+            [V(0), V(1)],
+            [V(1), V(2)],
+            [V(2), V(3)],
+            [V(3), V(0)],
+        ]));
+        assert_eq!(frame.faces_half_edges, Some(ti_vec![
+            vec![H(7), H(5), H(3), H(1)],
+            vec![H(1), H(0)],
+        ]));
+        frame.assert_topology_consistent();
     }
 }
