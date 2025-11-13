@@ -6,7 +6,7 @@ use nalgebra::{DMatrix, DVector, Dim, Dyn, Scalar, VectorView};
 use num_traits::RefNum;
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{EdgeDatas, FaceDatas, FaceField, VertexDatas, filter::{intersect::IntersectCoordinate, split_merge::MergeCoordinate}, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::{self, FloatOrd, IntoOrdAngle, NumEx}};
+use crate::{EdgeDatas, FaceDatas, FaceField, VertexDatas, filter::{intersect::IntersectCoordinate, split_merge::MergeCoordinate}, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::{self, FloatOrd, IntoOrd, IntoOrdAngle, IntoOrdAngleOp, NumEx, RefIntoOrdAngleOp}};
 
 pub mod intersect;
 pub mod split_merge;
@@ -80,17 +80,8 @@ macro_rules! vertices_coords_mut {
     };
 }
 
-pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate + IntoOrdAngle {
-    type Sortable: Ord;
-    type SortableRef<'a>: Ord;
+pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate + IntoOrd + IntoOrdAngleOp {
     const EXACT: bool;
-
-    fn into_sortable(self) -> Self::Sortable;
-    fn to_sortable_ref(&self) -> Self::SortableRef<'_>;
-    //fn to_sortable_slice(slice: &[Self]) -> &[Self::Sortable];
-    //fn vector_to_sortable<D: Dim>(vector: VectorView<'_, Self, D>) -> &[Self::Sortable] {
-    //    Self::to_sortable_slice(vector.data.into_slice())
-    //}
 
     /// Get the vertex coordinates, borrowing only the candidates instead of the entire frame
     fn vertices_coords<'a>(coords_f64: &'a Option<DMatrix<f64>>, coords_exact: &'a Option<DMatrix<BasedExpr>>) -> &'a Option<DMatrix<Self>>;
@@ -99,21 +90,7 @@ pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate + IntoOrdAng
 }
 
 impl Coordinate for f64 {
-    type Sortable = FloatOrd<f64>;
-    type SortableRef<'a> = FloatOrd<f64>;
     const EXACT: bool = false;
-
-    fn into_sortable(self) -> Self::Sortable {
-        FloatOrd(self)
-    }
-
-    fn to_sortable_ref(&self) -> Self::SortableRef<'_> {
-        FloatOrd(*self)
-    }
-    //fn to_sortable_slice(slice: &[Self]) -> &[Self::Sortable] {
-    //    // Safety: FloatOrd is repr(transparent) for f64
-    //    unsafe { mem::transmute(slice) }
-    //}
 
     fn vertices_coords<'a>(coords_f64: &'a Option<DMatrix<f64>>, _: &'a Option<DMatrix<BasedExpr>>) -> &'a Option<DMatrix<Self>> {
         coords_f64
@@ -124,20 +101,7 @@ impl Coordinate for f64 {
 }
 
 impl Coordinate for BasedExpr {
-    type Sortable = BasedExpr;
-    type SortableRef<'a> = &'a BasedExpr;
     const EXACT: bool = true;
-
-    fn into_sortable(self) -> Self::Sortable {
-        self
-    }
-
-    fn to_sortable_ref(&self) -> Self::SortableRef<'_> {
-        self
-    }
-    //fn to_sortable_slice(slice: &[Self]) -> &[Self::Sortable] {
-    //    slice
-    //}
 
     fn vertices_coords<'a>(_: &'a Option<DMatrix<f64>>, coords_exact: &'a Option<DMatrix<BasedExpr>>) -> &'a Option<DMatrix<Self>> {
         coords_exact
@@ -146,6 +110,9 @@ impl Coordinate for BasedExpr {
         coords_exact
     }
 }
+
+pub trait RefCoordinate<Base: Coordinate>: RefNum<Base> + RefIntoOrdAngleOp<Base> {}
+impl<Base: Coordinate, T: RefNum<Base> + RefIntoOrdAngleOp<Base>> RefCoordinate<Base> for T {}
 
 //pub trait SliceEx {
 //    type Elem;
@@ -911,7 +878,7 @@ impl Frame {
     /// 
     /// Requires edge data and a `vertices_coords` to exist. Coordinates must be 2D.
     pub fn try_into_planar_with_faces<T: NumEx + Coordinate>(mut self, epsilon: &T) -> Result<Self, PlanarWithFacesError<T>> where
-        for<'a> &'a T: RefNum<T>
+        for<'a> &'a T: RefCoordinate<T>
     {
         self.init_face_data([FaceField::HalfEdges]);
         // First, intersect all the edges. This, importantly, also guarantees that no two vertices
@@ -964,7 +931,7 @@ impl Frame {
                 ec.at_mut(h).push(FaceCorner(index, i));
             }
             fh.push(half_edges);
-            if true {// geom::polygon_orientation_ref(&vertices, |v| coords.fixed_view::<2, 1>(0, v.0)) < 0 {
+            if geom::polygon_orientation_ref(&vertices, |v| coords.fixed_view::<2, 1>(0, v.0)) < 0 {
                 outer_face = Some(index);
             }
         }

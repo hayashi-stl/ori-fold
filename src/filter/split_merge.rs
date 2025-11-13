@@ -228,7 +228,7 @@ impl Frame {
             splits.sort_by_key(|(e, at)| {
                 let coords = ev[*e].map(|v| vc.column(v.0));
                 let diff = &coords[0] - &coords[1];
-                T::into_sortable((at - &coords[1]).dot(&diff) / diff.norm_squared())
+                T::into_ord((at - &coords[1]).dot(&diff) / diff.norm_squared())
             });
         }
 

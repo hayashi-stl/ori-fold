@@ -144,35 +144,9 @@ impl Ord for AngleF64 {
     }
 }
 
-/// A basic trait for coordinates that can be turned into vectors.
-/// Unfortunately, the dimension is not a parameter of the associated type
-/// because we cannot equality bound GATs yet.
-pub trait RawVectorable<D: Dim> where DefaultAllocator: Allocator<D> {
-    /// The vector type of the coordinate
-    type Vector<'b>;
-}
-
-#[duplicate_item(
-    ty; [f32]; [f64]; [BasedExpr];
-)]
-impl<D: Dim> RawVectorable<D> for ty where DefaultAllocator: Allocator<D> {
-    type Vector<'b> = OVector<ty, D>;
-}
-
-#[duplicate_item(
-    ty; [f32]; [f64]; [BasedExpr];
-)]
-impl<'a, D: Dim> RawVectorable<D> for &'a ty where DefaultAllocator: Allocator<D> {
-    type Vector<'b> = VectorViewDyn<'b, ty, D>;
-}
-
-pub trait Vectorable<D: Dim>: Scalar + for<'a> RawVectorable<D, Vector<'a> = OVector<Self, D>> where DefaultAllocator: Allocator<D> {}
-impl<D: Dim, T: Scalar + for<'a> RawVectorable<D, Vector<'a> = OVector<Self, D>>> Vectorable<D> for T where DefaultAllocator: Allocator<D> {}
-
-pub trait RefVectorable<Base, D: Dim>: Scalar + for<'a> RawVectorable<D, Vector<'a> = VectorViewDyn<'a, Base, D>> where DefaultAllocator: Allocator<D> {}
-impl<Base, D: Dim, T: Scalar + for<'a> RawVectorable<D, Vector<'a> = VectorViewDyn<'a, Base, D>>> RefVectorable<Base, D> for T where DefaultAllocator: Allocator<D> {}
-
-pub trait IntoOrdAngle<Y: RawVectorable<U2> = Self>: RawVectorable<U2> {
+pub trait IntoOrdAngle<Y = Self>: {
+    type LVec<'a>;
+    type RVec<'a>;
     type Output: Ord;
     /// Finds the angle of the vector `[self, y]`,
     /// with the range [-π, π)
@@ -184,74 +158,85 @@ pub trait IntoOrdAngle<Y: RawVectorable<U2> = Self>: RawVectorable<U2> {
     /// with the range [-π, π)
     /// 
     /// This gives an angle that compares equal to `(other - self).x.into_ord_angle(other - self).y`.
-    fn ord_angle_to(v0: Self::Vector<'_>, v1: Y::Vector<'_>) -> Self::Output;
+    fn ord_angle_to(v0: Self::LVec<'_>, v1: Self::RVec<'_>) -> Self::Output;
 }
 
 #[duplicate_item(
-    f32_a  f32_b  val_a  val_b;
-    [ f32] [ f32] [ self] [ y];
-    [ f32] [&f32] [ self] [*y];
-    [&f32] [ f32] [*self] [ y];
-    [&f32] [&f32] [*self] [*y];
+    f32_a  f32_b  vec_f32_a                 vec_f32_b                 val_a  val_b;
+    [ f32] [ f32] [           Vector2<f32>] [           Vector2<f32>] [ self] [ y];
+    [ f32] [&f32] [           Vector2<f32>] [VectorView2Dyn<'a, f32>] [ self] [*y];
+    [&f32] [ f32] [VectorView2Dyn<'a, f32>] [           Vector2<f32>] [*self] [ y];
+    [&f32] [&f32] [VectorView2Dyn<'a, f32>] [VectorView2Dyn<'a, f32>] [*self] [*y];
 )]
 impl IntoOrdAngle<f32_b> for f32_a {
+    type LVec<'a> = vec_f32_a;
+    type RVec<'a> = vec_f32_b;
     type Output = AngleF64;
     fn into_ord_angle(self, y: f32_b) -> Self::Output {
         (val_a as f64).into_ord_angle(val_b as f64)
     }
 
-    fn ord_angle_to(v0: Self::Vector<'_>, v1: <f32_b as RawVectorable<U2>>::Vector<'_>) -> Self::Output {
+    fn ord_angle_to(v0: Self::LVec<'_>, v1: Self::RVec<'_>) -> Self::Output {
         AngleF64([v0.into_owned().map(|c| c as f64), v1.into_owned().map(|c| c as f64)])
     }
 }
 
 #[duplicate_item(
-    f64_a  f64_b  val_a  val_b;
-    [ f64] [ f64] [ self] [ y];
-    [ f64] [&f64] [ self] [*y];
-    [&f64] [ f64] [*self] [ y];
-    [&f64] [&f64] [*self] [*y];
+    f64_a  f64_b  vec_f64_a                 vec_f64_b                 val_a  val_b;
+    [ f64] [ f64] [           Vector2<f64>] [           Vector2<f64>] [ self] [ y];
+    [ f64] [&f64] [           Vector2<f64>] [VectorView2Dyn<'a, f64>] [ self] [*y];
+    [&f64] [ f64] [VectorView2Dyn<'a, f64>] [           Vector2<f64>] [*self] [ y];
+    [&f64] [&f64] [VectorView2Dyn<'a, f64>] [VectorView2Dyn<'a, f64>] [*self] [*y];
 )]
 impl IntoOrdAngle<f64_b> for f64_a {
+    type LVec<'a> = vec_f64_a;
+    type RVec<'a> = vec_f64_b;
     type Output = AngleF64;
     fn into_ord_angle(self, y: f64_b) -> Self::Output {
         AngleF64([Vector2::zeros(), vector![val_a, val_b]])
     }
 
-    fn ord_angle_to(v0: Self::Vector<'_>, v1: <f64_b as RawVectorable<U2>>::Vector<'_>) -> Self::Output {
+    fn ord_angle_to(v0: Self::LVec<'_>, v1: Self::RVec<'_>) -> Self::Output {
         AngleF64([v0.into_owned(), v1.into_owned()])
     }
 }
 
 #[duplicate_item(
-    ty_a         ty_b        ;
-    [ BasedExpr] [ BasedExpr];
-    [ BasedExpr] [&BasedExpr];
-    [&BasedExpr] [ BasedExpr];
-    [&BasedExpr] [&BasedExpr];
+    ty_a         ty_b         vec_ty_a                        vec_ty_b;
+    [ BasedExpr] [ BasedExpr] [           Vector2<BasedExpr>] [           Vector2<BasedExpr>];
+    [ BasedExpr] [&BasedExpr] [           Vector2<BasedExpr>] [VectorView2Dyn<'a, BasedExpr>];
+    [&BasedExpr] [ BasedExpr] [VectorView2Dyn<'a, BasedExpr>] [           Vector2<BasedExpr>];
+    [&BasedExpr] [&BasedExpr] [VectorView2Dyn<'a, BasedExpr>] [VectorView2Dyn<'a, BasedExpr>];
 )]
 impl IntoOrdAngle<ty_b> for ty_a {
+    type LVec<'a> = vec_ty_a;
+    type RVec<'a> = vec_ty_b;
     type Output = Angle;
     fn into_ord_angle(self, y: ty_b) -> Self::Output {
         self.into_angle(y)
     }
 
-    fn ord_angle_to(v0: Self::Vector<'_>, v1: <ty_b as RawVectorable<U2>>::Vector<'_>) -> Self::Output {
+    fn ord_angle_to(v0: Self::LVec<'_>, v1: Self::RVec<'_>) -> Self::Output {
         let [[x, y]] = (v1 - v0).data.0;
         y.into_ord_angle(x)
     }
 }
 
-pub trait IntoOrdAngleOp: Sized + IntoOrdAngle<Self> + for<'a> IntoOrdAngle<&'a Self, Output = <Self as IntoOrdAngle>::Output> {}
-impl<T: Sized + IntoOrdAngle<Self> + for<'a> IntoOrdAngle<&'a Self, Output = <Self as IntoOrdAngle>::Output>> IntoOrdAngleOp for T {}
+pub trait IntoOrdAngleOp: Sized
+    + for<'b, 'c> IntoOrdAngle<Self, LVec<'b> = Vector2<Self>, RVec<'c> = Vector2<Self>>
+    + for<'a, 'b, 'c> IntoOrdAngle<&'a Self, Output = <Self as IntoOrdAngle>::Output, LVec<'b> = Vector2<Self>, RVec<'c> = VectorView2Dyn<'c, Self>> {}
+impl<T: Sized
+    + for<'b, 'c> IntoOrdAngle<Self, LVec<'b> = Vector2<Self>, RVec<'c> = Vector2<Self>>
+    + for<'a, 'b, 'c> IntoOrdAngle<&'a Self, Output = <Self as IntoOrdAngle>::Output, LVec<'b> = Vector2<Self>, RVec<'c> = VectorView2Dyn<'c, Self>>>
+    IntoOrdAngleOp for T {}
 
 pub trait RefIntoOrdAngleOp<Base: IntoOrdAngleOp>:
-    IntoOrdAngle<Base, Output = <Base as IntoOrdAngle>::Output> +
-    for<'a> IntoOrdAngle<&'a Base, Output = <Base as IntoOrdAngle>::Output> {}
-impl<Base: IntoOrdAngleOp,
-    T: IntoOrdAngle<Base, Output = <Base as IntoOrdAngle>::Output> +
-    for<'a> IntoOrdAngle<&'a Base, Output = <Base as IntoOrdAngle>::Output>> RefIntoOrdAngleOp<Base> for T {}
-
+    for<'b, 'c> IntoOrdAngle<Base, Output = <Base as IntoOrdAngle>::Output, LVec<'b> = VectorView2Dyn<'b, Base>, RVec<'c> = Vector2<Base>> +
+    for<'a, 'b, 'c> IntoOrdAngle<&'a Base, Output = <Base as IntoOrdAngle>::Output, LVec<'b> = VectorView2Dyn<'b, Base>, RVec<'c> = VectorView2Dyn<'c, Base>> {}
+impl<Base: IntoOrdAngleOp, T:
+    for<'b, 'c> IntoOrdAngle<Base, Output = <Base as IntoOrdAngle>::Output, LVec<'b> = VectorView2Dyn<'b, Base>, RVec<'c> = Vector2<Base>> +
+    for<'a, 'b, 'c> IntoOrdAngle<&'a Base, Output = <Base as IntoOrdAngle>::Output, LVec<'b> = VectorView2Dyn<'b, Base>, RVec<'c> = VectorView2Dyn<'c, Base>>>
+    RefIntoOrdAngleOp<Base> for T {}
 
 /// Converts a type into an orderable type.
 /// Unfortunately only implemented for a few types due to lack of the understanding
@@ -369,8 +354,8 @@ pub fn sort_by_angle_field<T, S, F: FnMut(&T) -> VectorView2Dyn<S>>(points: &mut
 /// via computing sum of signed areas of triangles formed with origin
 /// Assumes the polygon is simple (no self-touching) and nonempty
 pub fn polygon_orientation<T, S, F: FnMut(&T) -> Vector2<S>>(points: &[T], mut mapping: F) -> i32 where
-    S: IntoOrd + Scalar + ClosedSubAssign + Vectorable<U2> + IntoOrdAngleOp,
-    for<'b> &'b S: RefVectorable<S, U2> + RefIntoOrdAngleOp<S>,
+    S: IntoOrd + Scalar + ClosedSubAssign + IntoOrdAngleOp,
+    for<'b> &'b S: RefIntoOrdAngleOp<S>,
 {
     let left_bottom = points.iter().enumerate()
         .min_by_key(|(_, point)| S::array_to_ord({let [arr] = mapping(*point).data.0; arr}))
@@ -389,8 +374,8 @@ pub fn polygon_orientation<T, S, F: FnMut(&T) -> Vector2<S>>(points: &[T], mut m
 /// +1 for counterclockwise, -1 for clockwise
 /// via computing sum of signed areas of triangles formed with origin
 pub fn polygon_orientation_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(points: &[T], mut mapping: F) -> i32 where
-    S: 'a + IntoOrd + Scalar + ClosedSubAssign + Vectorable<U2> + IntoOrdAngleOp,
-    for<'b> &'b S: RefVectorable<S, U2> + RefIntoOrdAngleOp<S>,
+    S: 'a + IntoOrd + Scalar + ClosedSubAssign + IntoOrdAngleOp,
+    for<'b> &'b S: RefIntoOrdAngleOp<S>,
 {
     let left_bottom = points.iter().enumerate()
         .min_by_key(|(_, point)| S::slice_to_ord(mapping(*point).data.into_slice()))
@@ -409,8 +394,8 @@ pub fn polygon_orientation_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(
 /// +1 for counterclockwise, -1 for clockwise
 /// via computing sum of signed areas of triangles formed with origin
 pub fn polygon_orientation_field<T, S, F: FnMut(&T) -> VectorView2Dyn<S>>(points: &[T], mut mapping: F) -> i32 where
-    S: IntoOrd + Scalar + ClosedSubAssign + Vectorable<U2> + IntoOrdAngleOp,
-    for<'b> &'b S: RefVectorable<S, U2> + RefIntoOrdAngleOp<S>,
+    S: IntoOrd + Scalar + ClosedSubAssign + IntoOrdAngleOp,
+    for<'b> &'b S: RefIntoOrdAngleOp<S>,
 {
     let left_bottom = points.iter().enumerate()
         .min_by_key(|(_, point)| S::slice_to_ord(mapping(*point).data.into_slice()))
@@ -621,7 +606,7 @@ mod test {
     use exact_number::{based_expr};
     use nalgebra::{Affine2, ClosedSubAssign, Matrix2xX, Scalar, U2, Vector2, matrix, vector};
 
-    use crate::geom::{IntoOrd, IntoOrdAngle, IntoOrdAngleOp, RefIntoOrdAngleOp, RefVectorable, SegmentIntersection, VectorView2Dyn, Vectorable, polygon_orientation, polygon_orientation_field, polygon_orientation_ref, reflect_line, reflect_line_matrix, segment_intersect, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix};
+    use crate::geom::{IntoOrd, IntoOrdAngle, IntoOrdAngleOp, RefIntoOrdAngleOp, SegmentIntersection, VectorView2Dyn, polygon_orientation, polygon_orientation_field, polygon_orientation_ref, reflect_line, reflect_line_matrix, segment_intersect, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix};
 
     /// Gets the permutation required to take `a` to `b`.
     /// `permutation(a, b).0[i] == i`
@@ -713,8 +698,8 @@ mod test {
 
     fn polygon_orientation_test<T, S>(points: Vec<T>, mut mapping: impl FnMut(&T) -> VectorView2Dyn<S>, expected: i32) where
         T: Clone + Debug + PartialEq,
-        S: IntoOrd + Scalar + ClosedSubAssign + Vectorable<U2> + IntoOrdAngleOp,
-        for<'b> &'b S: RefVectorable<S, U2> + RefIntoOrdAngleOp<S>,
+        S: IntoOrd + Scalar + ClosedSubAssign + IntoOrdAngleOp,
+        for<'b> &'b S: RefIntoOrdAngleOp<S>,
     {
         let indexes = (0..points.len()).collect::<Vec<_>>();
         let result = polygon_orientation_ref(&indexes, |i| mapping(&points[*i]));
