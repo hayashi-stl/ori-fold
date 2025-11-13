@@ -128,7 +128,7 @@ impl Basis {
     /// Checks that this is actually a closed basis.
     /// Guarantees that the basis is closed, but doesn't guarantee
     /// that it's linearly independent, even though it tries its best.
-    fn new_checked(basis: Vec<SqrtExpr>) -> Result<Self, BasisError> {
+    pub(crate) fn new_checked(basis: Vec<SqrtExpr>) -> Result<Self, BasisError> {
         if basis.len() == 0 || basis[0] != SqrtExpr::ONE {
             Err(BasisError::FirstElementNotOne)?;
         }

@@ -2220,7 +2220,6 @@ mod test {
  
     #[test]
     fn test_interval_div_minimal_fixed() {
-        type I = Interval<Fixed>;
         // I'm lazy, so just test rounding
         div_bounds_test::<Fixed>(
             i2i(16, 16, 4), i2i(48, 48, 4),

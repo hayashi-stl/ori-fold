@@ -1,11 +1,12 @@
 use std::{iter, mem};
 
-use exact_number::BasedExpr;
+use exact_number::{BasedExpr};
 use indexmap::{indexmap, map::Entry, IndexMap};
 use nalgebra::{DMatrix, DVector, Dim, Dyn, Scalar, VectorView};
+use num_traits::RefNum;
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{EdgeDatas, FaceDatas, VertexDatas, filter::{intersect::IntersectCoordinate, split_merge::MergeCoordinate}, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::FloatOrd};
+use crate::{EdgeDatas, FaceDatas, FaceField, VertexDatas, filter::{intersect::IntersectCoordinate, split_merge::MergeCoordinate}, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::{self, FloatOrd, IntoOrdAngle, NumEx}};
 
 pub mod intersect;
 pub mod split_merge;
@@ -63,9 +64,26 @@ impl RemoveStrategy for ShiftRemove {
     }
 }
 
-pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate {
+/// Get the vertex coordinates, borrowing only the candidates instead of the entire frame
+#[macro_export]
+macro_rules! vertices_coords {
+    (<$ty:ty> $frame:expr) => {
+        <$ty as $crate::filter::Coordinate>::vertices_coords(&$frame.vertices_coords_f64, &$frame.vertices_coords_exact)
+    };
+}
+
+/// Get the vertex coordinates mutably, borrowing only the candidates instead of the entire frame
+#[macro_export]
+macro_rules! vertices_coords_mut {
+    (<$ty:ty> $frame:expr) => {
+        <$ty as $crate::filter::Coordinate>::vertices_coords_mut(&mut $frame.vertices_coords_f64, &mut $frame.vertices_coords_exact)
+    };
+}
+
+pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate + IntoOrdAngle {
     type Sortable: Ord;
     type SortableRef<'a>: Ord;
+    const EXACT: bool;
 
     fn into_sortable(self) -> Self::Sortable;
     fn to_sortable_ref(&self) -> Self::SortableRef<'_>;
@@ -74,13 +92,16 @@ pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate {
     //    Self::to_sortable_slice(vector.data.into_slice())
     //}
 
-    fn frame_to_vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>>;
-    fn frame_to_vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>>;
+    /// Get the vertex coordinates, borrowing only the candidates instead of the entire frame
+    fn vertices_coords<'a>(coords_f64: &'a Option<DMatrix<f64>>, coords_exact: &'a Option<DMatrix<BasedExpr>>) -> &'a Option<DMatrix<Self>>;
+    /// Get the vertex coordinates mutably, borrowing only the candidates instead of the entire frame
+    fn vertices_coords_mut<'a>(coords_f64: &'a mut Option<DMatrix<f64>>, coords_exact: &'a mut Option<DMatrix<BasedExpr>>) -> &'a mut Option<DMatrix<Self>>;
 }
 
 impl Coordinate for f64 {
     type Sortable = FloatOrd<f64>;
     type SortableRef<'a> = FloatOrd<f64>;
+    const EXACT: bool = false;
 
     fn into_sortable(self) -> Self::Sortable {
         FloatOrd(self)
@@ -94,13 +115,18 @@ impl Coordinate for f64 {
     //    unsafe { mem::transmute(slice) }
     //}
 
-    fn frame_to_vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_f64 }
-    fn frame_to_vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_f64 }
+    fn vertices_coords<'a>(coords_f64: &'a Option<DMatrix<f64>>, _: &'a Option<DMatrix<BasedExpr>>) -> &'a Option<DMatrix<Self>> {
+        coords_f64
+    }
+    fn vertices_coords_mut<'a>(coords_f64: &'a mut Option<DMatrix<f64>>, _: &'a mut Option<DMatrix<BasedExpr>>) -> &'a mut Option<DMatrix<Self>> {
+        coords_f64
+    }
 }
 
 impl Coordinate for BasedExpr {
     type Sortable = BasedExpr;
     type SortableRef<'a> = &'a BasedExpr;
+    const EXACT: bool = true;
 
     fn into_sortable(self) -> Self::Sortable {
         self
@@ -113,8 +139,12 @@ impl Coordinate for BasedExpr {
     //    slice
     //}
 
-    fn frame_to_vertices_coords(frame: &'_ Frame) -> &'_ Option<DMatrix<Self>> { &frame.vertices_coords_exact }
-    fn frame_to_vertices_coords_mut(frame: &'_ mut Frame) -> &'_ mut Option<DMatrix<Self>> { &mut frame.vertices_coords_exact }
+    fn vertices_coords<'a>(_: &'a Option<DMatrix<f64>>, coords_exact: &'a Option<DMatrix<BasedExpr>>) -> &'a Option<DMatrix<Self>> {
+        coords_exact
+    }
+    fn vertices_coords_mut<'a>(_: &'a mut Option<DMatrix<f64>>, coords_exact: &'a mut Option<DMatrix<BasedExpr>>) -> &'a mut Option<DMatrix<Self>> {
+        coords_exact
+    }
 }
 
 //pub trait SliceEx {
@@ -186,18 +216,25 @@ impl Frame {
         };
     }
 
-    /// Initializes the vertex data with some fields. This should be called only on a frame with no vertex data,
-    /// and before adding new vertices.
+    /// Clears all vertex data. This also clears edge data and face data,
+    /// and the [`FrameAttribute::2D`] and [`FrameAttribute::3D`] attributes.
+    pub fn clear_vertex_data(&mut self) {
+        self.clear_edge_data();
+        self.remove_attribute(FrameAttribute::_2D);
+        self.remove_attribute(FrameAttribute::_3D);
+        self.num_vertices = 0;
+        self.vertices_coords_f64 = None;
+        self.vertices_coords_exact = None;
+        self.vertices_custom.clear();
+    }
+    
+    /// (Re)Initializes the vertex data with some fields, clearing old data.
     /// 
     /// `vertices_half_edges` does not get initialized.
     /// 
     /// The coordinates will have `num_dimensions` dimensions if they are specified to exist.
     pub fn init_vertex_data(&mut self, fields: impl IntoIterator<Item = VertexField>, num_dimensions: usize) {
-        assert_eq!(self.num_vertices, 0);
-        assert_eq!(self.vertices_coords_f64, None);
-        assert_eq!(self.vertices_coords_exact, None);
-        assert_eq!(self.vertices_half_edges, None);
-        assert_eq!(self.vertices_custom.len(), 0);
+        self.clear_vertex_data();
 
         for field in fields.into_iter() {
             match field {
@@ -215,22 +252,27 @@ impl Frame {
         }
     }
 
-    /// Initializes the edge data with some fields. This should be called only on a frame with no edge data,
-    /// and before adding new edges.
+    /// Clears all edge data. This also clears face data.
+    pub fn clear_edge_data(&mut self) {
+        self.clear_face_data();
+        self.edges_vertices = None;
+        self.edges_assignment = None;
+        self.edges_fold_angle_f64 = None;
+        self.edges_fold_angle_exact = None;
+        self.edges_length_f64 = None;
+        self.edges_length2_exact = None;
+        self.edges_custom.clear();
+        self.edge_orders = None;
+    }
+
+    /// (Re)Initializes the edge data with some fields, clearing old data
     /// 
     /// `vertices_half_edges` and `edges_vertices` always get initialized.
     /// `edges_face_corners` does not get initialized.
     pub fn init_edge_data(&mut self, fields: impl IntoIterator<Item = EdgeField>) {
-        assert_eq!(self.edges_vertices, None);
-        assert_eq!(self.edges_face_corners, None);
-        assert_eq!(self.edges_assignment, None);
-        assert_eq!(self.edges_fold_angle_f64, None);
-        assert_eq!(self.edges_fold_angle_exact, None);
-        assert_eq!(self.edges_length_f64, None);
-        assert_eq!(self.edges_length2_exact, None);
-        assert_eq!(self.edges_custom.len(), 0);
+        self.clear_edge_data();
 
-        self.vertices_half_edges = Some(ti_vec![]);
+        self.vertices_half_edges = Some(ti_vec![vec![]; self.num_vertices]);
         self.edges_vertices = Some(ti_vec![]);
         for field in fields.into_iter() {
             match field {
@@ -242,6 +284,30 @@ impl Frame {
                 EdgeField::LengthF64 => self.edges_length_f64 = Some(ti_vec![]),
                 EdgeField::Length2Exact => self.edges_length2_exact = Some(ti_vec![]),
                 EdgeField::Custom(k) => { self.edges_custom.insert(k, ti_vec![]); }
+            };
+        }
+    }
+
+    /// Clears all face data.
+    pub fn clear_face_data(&mut self) {
+        self.edges_face_corners = None;
+        self.faces_half_edges = None;
+        self.faces_custom.clear();
+        self.face_orders = None;
+    }
+
+    /// (Re)Initializes the face data with some fields, clearing old data. Requires edge data to exist.
+    /// 
+    /// `edges_face_corners` and `faces_half_edges` always get initialized.
+    pub fn init_face_data(&mut self, fields: impl IntoIterator<Item = FaceField>) {
+        self.clear_face_data();
+
+        self.edges_face_corners = Some(ti_vec![[vec![], vec![]]; self.edges_vertices.as_ref().unwrap().len()]);
+        self.faces_half_edges = Some(ti_vec![]);
+        for field in fields.into_iter() {
+            match field {
+                FaceField::HalfEdges => (),
+                FaceField::Custom(k) => { self.faces_custom.insert(k, ti_vec![]); }
             };
         }
     }
@@ -311,7 +377,7 @@ impl Frame {
     pub fn add_vertex_like<T: Coordinate>(&mut self, like: Vertex, at: DVector<T>) -> Vertex {
         let data = self.vertex_data(like);
         let v = self.add_vertex(data);
-        T::frame_to_vertices_coords_mut(self).as_mut().map(|vc| set_column(vc, v.0, at));
+        vertices_coords_mut!(<T> self).as_mut().map(|vc| set_column(vc, v.0, at));
         v
     }
 
@@ -824,6 +890,100 @@ impl Frame {
     pub fn swap_remove_face(&mut self, face: Face) -> FaceData {
         self.remove_face_generic(face, SwapRemove)
     }
+
+    /// Sorts the half-edges of each vertex counterclockwise.
+    /// Requires `vertices_half_edges` and a `vertices_coords` to exist. Coordinates must be 2D
+    pub fn sort_vertices_half_edges<T: Coordinate>(&mut self) {
+        let vh = self.vertices_half_edges.as_mut().unwrap();
+        let ev = self.edges_vertices.as_ref().unwrap();
+        let coords = vertices_coords!(<T> self).as_ref().unwrap();
+        for (v, hs) in vh.iter_mut_enumerated() {
+            geom::sort_by_angle_ref(hs, coords.fixed_view::<2, 1>(0, v.0),
+                |&h| coords.fixed_view::<2, 1>(0, ev.at(h)[1].0));
+        }
+    }
+
+    /// Attempts to split intersections and create faces, making a planar graph.
+    /// The very outside face is not made.
+    /// 
+    /// If there is face data, it will be deleted. New face data will be made,
+    /// and only [`Frame::faces_half_edges`] will exist.
+    /// 
+    /// Requires edge data and a `vertices_coords` to exist. Coordinates must be 2D.
+    pub fn try_into_planar_with_faces<T: NumEx + Coordinate>(mut self, epsilon: &T) -> Result<Self, PlanarWithFacesError<T>> where
+        for<'a> &'a T: RefNum<T>
+    {
+        self.init_face_data([FaceField::HalfEdges]);
+        // First, intersect all the edges. This, importantly, also guarantees that no two vertices
+        // have the exact same position.
+        // TODO: Check that coordinates aren't too big, and flush coordinates that are too close to 0.
+        self.intersect_all_edges(epsilon);
+        if !T::EXACT {
+            // Because intersection points are not generated exactly, run the intersection algorithm
+            // again to confirm that all intersections have indeed been split.
+            // TODO: This probably only needs to happen if epsilon is below a certain bound.
+            let ev = self.edges_vertices.as_ref().unwrap();
+            let coords = vertices_coords!(<T> self).as_ref().unwrap();
+            let splits = intersect::intersect_all_segments_ref(
+                (0..self.edges_vertices.as_ref().unwrap().len()).map(Edge),
+                |&e| ev[e].map(|v| coords.fixed_view::<2, 1>(0, v.0)),
+                intersect::NoReportSplitters
+            );
+            if !splits.is_empty() { 
+                return Err(PlanarWithFacesError::TooDegenerate { epsilon: epsilon.clone() })
+            }
+        }
+        self.sort_vertices_half_edges::<T>(); // this is unambiguous now
+
+        // Finally, create the faces
+        // Algorithm taken from https://github.com/edemaine/fold/blob/main/src/convert.coffee, `convert.vertices_edges_to_faces_vertices_edges`.
+        // and modified to work with our topology diamond.
+        let coords = vertices_coords!(<T> self).as_ref().unwrap();
+        let vh = self.vertices_half_edges.as_ref().unwrap();
+        let ev = self.edges_vertices.as_ref().unwrap();
+        let ec = self.edges_face_corners.as_mut().unwrap(); // this got initialized
+        let fh = self.faces_half_edges.as_mut().unwrap(); // this got initialized
+        let mut next = vh.iter_enumerated()
+            .flat_map(|(v, hs)| hs.iter().zip(hs.iter().cycle().skip(1))
+                .map(move |(&h0, &h1)| ((v, h1.flipped()), h0)))
+            .collect::<IndexMap<_, _>>();
+        let mut outer_face = None;
+
+        // Note here that `h1` points *into* the vertex and `h2` points *out of* the vertex.
+        while let Some(((vertex, h1), mut h2)) = next.pop() {
+            let mut half_edges = vec![h1];
+            let mut vertices = vec![vertex];
+            while h2 != half_edges[0] {
+                half_edges.push(h2);
+                vertices.push(ev.at(h2)[1]);
+                h2 = next.swap_remove(&(*vertices.last().unwrap(), h2)).expect("loop confusion");
+            }
+
+            let index = fh.next_key();
+            for (i, &h) in half_edges.iter().enumerate() {
+                ec.at_mut(h).push(FaceCorner(index, i));
+            }
+            fh.push(half_edges);
+            if true {// geom::polygon_orientation_ref(&vertices, |v| coords.fixed_view::<2, 1>(0, v.0)) < 0 {
+                outer_face = Some(index);
+            }
+        }
+        // Oh hey, it's orientable, and it's in oriented representation
+        // (vertices_half_edges is sorted counterclockwise, and all faces are oriented counterclockwise)!
+        self.add_attribute_unchecked(FrameAttribute::Manifold);
+        self.add_attribute_unchecked(FrameAttribute::Orientable);
+
+        let outer_face = outer_face.expect("expected outer face in planar graph");
+        self.swap_remove_face(outer_face);
+        Ok(self)
+    }
+}
+
+/// An error that can result from attempting a conversion to planar representation
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq, PartialOrd, Ord))] // Really no point in this derivation outside of tests
+pub enum PlanarWithFacesError<T> {
+    TooDegenerate { epsilon: T },
 }
 
 /// Given two edges defined by their vertices, gets a vertex incident to both of them, if one exists.

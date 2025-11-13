@@ -7,6 +7,7 @@ pub use malachite;
 use malachite::base::num::basic::traits::{Zero as _};
 use malachite::Integer;
 use malachite::base::num::arithmetic::traits::{Abs, Sign, Square};
+use malachite::base::num::conversion::traits::{IsInteger};
 use nalgebra::{DVector, DVectorView};
 use num::{One, Signed, Zero};
 
@@ -138,6 +139,25 @@ macro_rules! based_expr {
     ($($tt:tt)*) => {
         $crate::expr_parse!($($tt)*)
     };
+}
+
+pub trait BasedReprRefEx {
+    /// Checks whether the represented number is rational
+    fn is_rational(self) -> bool;
+    /// Checks whether the represented number is an integer
+    fn is_integer(self) -> bool;
+}
+
+pub type BasedReprRef<'a> = (&'a DVector<Rat>, &'a ArcBasis);
+
+impl BasedReprRefEx for BasedReprRef<'_> {
+    fn is_rational(self) -> bool {
+        self.0.iter().skip(1).all(|a| a == &Rat::ZERO)
+    }
+
+    fn is_integer(self) -> bool {
+        self.is_rational() && self.0[0].is_integer()
+    }
 }
 
 /// An expression of an algebraic number with a basis. Technically a member of a
@@ -386,6 +406,22 @@ impl BasedExpr {
             Self::Based(coeffs, basis) => (coeffs.as_view(), Some(basis))
         }
     }
+    
+    /// Checks whether this number is rational (all coefficients are 0 except the first one)
+    pub fn is_rational(&self) -> bool {
+        match self {
+            Self::Baseless(_) => true,
+            Self::Based(coeffs, basis) => (coeffs, basis).is_rational()
+        }
+    }
+    
+    /// Checks whether this number is an integer (all coefficients are 0 except the first one, which is an integer)
+    pub fn is_integer(&self) -> bool {
+        match self {
+            Self::Baseless(_) => true,
+            Self::Based(coeffs, basis) => (coeffs, basis).is_integer()
+        }
+    }
 }
 
 impl Zero for BasedExpr {
@@ -592,7 +628,7 @@ mod tests {
     #[test]
     fn test_bases_list() {
         let _lock = TEST_LOCK.write();
-        let basis = Basis::new(vec![sqrt_expr_parse!(1), sqrt_expr_parse!(2)]);
+        let basis = Basis::new_checked(vec![sqrt_expr_parse!(1), sqrt_expr_parse!(2)]).unwrap();
         let expr = based_expr!(1 + sqrt 2);
 
         {

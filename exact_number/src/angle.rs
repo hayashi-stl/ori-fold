@@ -1,4 +1,6 @@
 use std::{mem, ops::{Add, AddAssign, Neg, Sub, SubAssign}};
+use std::f32::consts::PI as PI_F32;
+use std::f64::consts::PI as PI_F64;
 
 use malachite::base::num::arithmetic::traits::{CheckedDiv, NegAssign};
 
@@ -31,18 +33,8 @@ impl Angle {
         Self { turn_value, tan }
     }
 
-    pub fn atan2(y: BasedExpr, x: BasedExpr) -> Self {
-        let x_sign = x.cmp_zero();
-        let y_sign = y.cmp_zero();
-        let turn_value = if x_sign.is_lt() && y_sign.is_le() {
-            -1
-        } else if x_sign.is_gt() || y_sign.is_le() {
-            0
-        } else {
-            1
-        };
-        let tan = if x_sign.is_eq() && y_sign.is_eq() { Some(x.into_zero()) } else { y.checked_div(x) };
-        Self::new(turn_value, tan)
+    pub fn from_xy<X, Y>(x: X, y: Y) -> Self where X: IntoAngle<Y, Output = Self> {
+        x.into_angle(y)
     }
 
     /// Returns the tangent of the angle. If undefined, returns `None`.
@@ -53,6 +45,100 @@ impl Angle {
     /// Converts this into its turn value $\lfloor angle/π + 1/2\rfloor - 1/2$ and its tangent.
     pub fn into_turn_value_tan(self) -> (i32, Option<BasedExpr>) {
         (self.turn_value, self.tan)
+    }
+
+    /// Converts this into an f64.
+    /// 
+    /// Beware, precision is unspecified and corresponds to the
+    /// precision of [`f64::atan2`].
+    pub fn to_f64_unspecified(&self) -> f64 {
+        let turn = self.turn_value as f64 * PI_F64;
+        let atan = self.tan.as_ref()
+            .map(|tan| tan.round_to_nearest_f64().atan())
+            .unwrap_or(-PI_F64 * 0.5);
+        turn + atan
+    }
+}
+
+pub trait IntoAngle<Y = Self> {
+    type Output;
+    /// Finds the angle of the vector `[self, y]`,
+    /// with the range [-π, π)
+    /// 
+    /// Like `atan2`, but with x first and y second.
+    fn into_angle(self, y: Y) -> Self::Output;
+}
+
+impl IntoAngle<f32> for f32 {
+    type Output = f32;
+    fn into_angle(self, y: Self) -> Self::Output {
+        if self < 0.0 && y == 0.0 { -PI_F32 } else { y.atan2(self) }
+    }
+}
+impl IntoAngle<&f32> for f32 { type Output = f32; fn into_angle(self, y: &f32) -> Self::Output { self.into_angle(*y) } }
+impl IntoAngle<f32> for &f32 { type Output = f32; fn into_angle(self, y: f32) -> Self::Output { (*self).into_angle(y) } }
+impl IntoAngle<&f32> for &f32 { type Output = f32; fn into_angle(self, y: &f32) -> Self::Output { (*self).into_angle(*y) } }
+
+impl IntoAngle<f64> for f64 {
+    type Output = f64;
+    fn into_angle(self, y: Self) -> Self::Output {
+        if self < 0.0 && y == 0.0 { -PI_F64 } else { y.atan2(self) }
+    }
+}
+impl IntoAngle<&f64> for f64 { type Output = f64; fn into_angle(self, y: &f64) -> Self::Output { self.into_angle(*y) } }
+impl IntoAngle<f64> for &f64 { type Output = f64; fn into_angle(self, y: f64) -> Self::Output { (*self).into_angle(y) } }
+impl IntoAngle<&f64> for &f64 { type Output = f64; fn into_angle(self, y: &f64) -> Self::Output { (*self).into_angle(*y) } }
+
+fn turn_and_00(x: &BasedExpr, y: &BasedExpr) -> (i32, bool) {
+    let x_sign = x.cmp_zero();
+    let y_sign = y.cmp_zero();
+    let turn_value = if x_sign.is_lt() && y_sign.is_le() {
+        -1
+    } else if x_sign.is_gt() || y_sign.is_le() {
+        0
+    } else {
+        1
+    };
+    (turn_value, x_sign.is_eq() && y_sign.is_eq())
+}
+
+impl IntoAngle<BasedExpr> for BasedExpr {
+    type Output = Angle;
+    fn into_angle(self, y: BasedExpr) -> Self::Output {
+        let x = self;
+        let (turn_value, zeros) = turn_and_00(&x, &y);
+        let tan = if zeros { Some(x) } else { y.checked_div(x) };
+        Angle::new(turn_value, tan)
+    }
+}
+
+impl IntoAngle<&BasedExpr> for BasedExpr {
+    type Output = Angle;
+    fn into_angle(self, y: &BasedExpr) -> Self::Output {
+        let x = self;
+        let (turn_value, zeros) = turn_and_00(&x, &y);
+        let tan = if zeros { Some(x) } else { y.checked_div(x) };
+        Angle::new(turn_value, tan)
+    }
+}
+
+impl IntoAngle<BasedExpr> for &BasedExpr {
+    type Output = Angle;
+    fn into_angle(self, y: BasedExpr) -> Self::Output {
+        let x = self;
+        let (turn_value, zeros) = turn_and_00(&x, &y);
+        let tan = if zeros { Some(y) } else { y.checked_div(x) };
+        Angle::new(turn_value, tan)
+    }
+}
+
+impl IntoAngle<&BasedExpr> for &BasedExpr {
+    type Output = Angle;
+    fn into_angle(self, y: &BasedExpr) -> Self::Output {
+        let x = self;
+        let (turn_value, zeros) = turn_and_00(&x, &y);
+        let tan = if zeros { Some(x.clone()) } else { y.checked_div(x) };
+        Angle::new(turn_value, tan)
     }
 }
 
@@ -251,6 +337,10 @@ impl Sub<&Angle> for &Angle {
 
 #[cfg(test)]
 mod test {
+    use approx::assert_relative_eq;
+
+    use crate::{BasedExpr, angle::IntoAngle, based_expr};
+
     use super::Angle;
 
     fn angle_neg_test(a: Angle, expected: Angle) {
@@ -267,6 +357,58 @@ mod test {
         assert_eq!(b.clone() + &a, expected);
         assert_eq!(&b + a.clone(), expected);
         assert_eq!(&b + &a, expected);
+    }
+
+    fn into_angle_test(x: BasedExpr, y: BasedExpr, expected: Angle) {
+        assert_eq!(x.clone().into_angle(y.clone()), expected);
+        assert_eq!(x.clone().into_angle(&y), expected);
+        assert_eq!((&x).into_angle(y.clone()), expected);
+        assert_eq!((&x).into_angle(&y), expected);
+
+        // Also check the float implementations
+        let x = x.round_to_nearest_f64();
+        let y = y.round_to_nearest_f64();
+        let expected = expected.to_f64_unspecified();
+        assert_relative_eq!(x.into_angle(y), expected);
+        assert_relative_eq!(x.into_angle(&y), expected);
+        assert_relative_eq!((&x).into_angle(y), expected);
+        assert_relative_eq!((&x).into_angle(&y), expected);
+
+        let x = x as f32;
+        let y = y as f32;
+        let expected = expected as f32;
+        assert_relative_eq!(x.into_angle(y), expected);
+        assert_relative_eq!(x.into_angle(&y), expected);
+        assert_relative_eq!((&x).into_angle(y), expected);
+        assert_relative_eq!((&x).into_angle(&y), expected);
+    }
+
+    #[test]
+    fn test_into_angle() {
+        into_angle_test(based_expr!(0), based_expr!(0), angle!(0, 0));
+        into_angle_test(based_expr!(0 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2), angle!(0, 0 + 0 sqrt 2)); // basis check
+        into_angle_test(based_expr!(1/16), based_expr!(0), angle!(0, 0));
+        into_angle_test(based_expr!(50), based_expr!(0), angle!(0, 0));
+
+        // Edge cases
+        into_angle_test(based_expr!(-1), based_expr!( 0), angle!(-1, 0));
+        into_angle_test(based_expr!(-1), based_expr!(-1), angle!(-1, 1));
+        into_angle_test(based_expr!( 0), based_expr!(-1), angle!(0, -inf));
+        into_angle_test(based_expr!( 1), based_expr!(-1), angle!(0, -1));
+        into_angle_test(based_expr!( 1), based_expr!( 0), angle!(0, 0));
+        into_angle_test(based_expr!( 1), based_expr!( 1), angle!(0, 1));
+        into_angle_test(based_expr!( 0), based_expr!( 1), angle!(1, -inf));
+        into_angle_test(based_expr!(-1), based_expr!( 1), angle!(1, -1));
+
+        // Other cases (each slice)
+        into_angle_test(based_expr!(-5), based_expr!(-1), angle!(-1, 1/5));
+        into_angle_test(based_expr!(-4), based_expr!(-6), angle!(-1, 3/2));
+        into_angle_test(based_expr!( 1), based_expr!(-5), angle!(0, -5));
+        into_angle_test(based_expr!( 6), based_expr!(-4), angle!(0, -2/3));
+        into_angle_test(based_expr!( 5), based_expr!( 1), angle!(0, 1/5));
+        into_angle_test(based_expr!( 4), based_expr!( 6), angle!(0, 3/2));
+        into_angle_test(based_expr!(-1), based_expr!( 5), angle!(1, -5));
+        into_angle_test(based_expr!(-6), based_expr!( 4), angle!(1, -2/3));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use nalgebra::{DVector, Dyn, RawStorage, RealField, Vector2, vector};
 use num_traits::{RefNum, Zero};
 use robust_geometry as robust;
 
-use crate::{Edge, EdgesVerticesEx, Frame, filter::Coordinate, geom::{self, Atan2, FloatOrd, LineIntersection, NumEx, SegmentIntersection, VectorView2Dyn}};
+use crate::{Edge, EdgesVerticesEx, Frame, filter::Coordinate, geom::{self, AngleF64, FloatOrd, LineIntersection, NumEx, SegmentIntersection, VectorView2Dyn}, vertices_coords};
 
 // Pseudocode for line sweep
 //
@@ -440,31 +440,6 @@ impl Ord for PosF64 {
     }
 }
 
-/// Stores left point before right point
-#[derive(Clone, Copy, Debug)]
-pub struct AngleF64([Vector2<f64>; 2]);
-
-impl PartialEq for AngleF64 {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other).is_eq()
-    }
-}
-
-impl Eq for AngleF64 {}
-
-impl PartialOrd for AngleF64 {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for AngleF64 {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let orient = robust::cross_2d(other.0[0], other.0[1], self.0[0], self.0[1]);
-        FloatOrd(orient).cmp(&FloatOrd(0.0))
-    }
-}
-
 pub trait IntersectCoordinate: NumEx + RealField {
     type Event<'a, E: Eq + Clone>: Ord + Event<E = E, N = Self>;
     type Pos: Ord;
@@ -775,7 +750,7 @@ impl Frame {
     pub fn intersect_all_edges<T: NumEx + Coordinate>(&mut self, epsilon: &T) where
         for<'a> &'a T: RefNum<T>
     {
-        let vertices_coords = T::frame_to_vertices_coords(self).as_ref().unwrap(); // required by spec
+        let vertices_coords = vertices_coords!(<T> self).as_ref().unwrap(); // required by spec
         assert_eq!(vertices_coords.nrows(), 2, "intersect_all_edges requires 2D coordinates");
         let edges_vertices = self.edges_vertices.as_ref().unwrap(); // required by spec
         let splits = T::intersect_all_segments_ref(
@@ -786,24 +761,6 @@ impl Frame {
         self.split_edges(splits.into_iter().map(|(e, at)| (e, DVector::from_vec(at.data.0[0].to_vec()))));
         self.merge_nearby_vertices(epsilon);
         self.merge_doubled_edges();
-    }
-
-    pub fn try_into_planar_with_faces<T: NumEx + Coordinate>(mut self, epsilon: &T) -> Option<Self> where
-        Vector2<T>: Atan2,
-        for<'a> &'a T: RefNum<T>
-    {
-        todo!()
-        //self.intersect_all_edges(epsilon);
-        //// Now we sort points and make faces
-        //let vh = self.vertices_half_edges.as_mut().unwrap();
-        //let ev = self.edges_vertices.as_ref().unwrap();
-        //let coords = T::vertices_coords(&self).as_ref().unwrap();
-        //for (v, hs) in vh.iter_mut_enumerated() {
-        //    geom::sort_by_angle_ref(hs, coords.fixed_view::<2, 1>(0, v.0),
-        //        |&h| coords.fixed_view::<2, 1>(0, ev.at(h)[1].0));
-        //}
-        
-        //Some(self)
     }
 }
 

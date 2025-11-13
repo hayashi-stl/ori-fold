@@ -1,8 +1,8 @@
 
-use malachite::{base::{num::conversion::traits::{IsInteger, RoundingFrom}, rounding_modes::RoundingMode}, Integer, Natural};
+use malachite::{base::{num::conversion::traits::{RoundingFrom}, rounding_modes::RoundingMode}, Integer, Natural};
 use nalgebra::DVector;
 
-use crate::{interval::Interval, rat::Rat, BasedExpr};
+use crate::{BasedExpr, BasedReprRefEx, interval::Interval, rat::Rat};
 
 impl BasedExpr {
     /// Rounds this expression to the integer type with the given rounding mode.
@@ -10,7 +10,7 @@ impl BasedExpr {
         match self {
             BasedExpr::Baseless(a) => Integer::rounding_from(a, mode).0,
             BasedExpr::Based(a, basis) => {
-                if a.iter().skip(1).all(|a| a == &Rat::ZERO) {
+                if (a, basis).is_rational() {
                     Integer::rounding_from(&a[0], mode).0.into()
                 } else {
                     // Not an integer
@@ -25,7 +25,7 @@ impl BasedExpr {
         match self {
             BasedExpr::Baseless(a) => f64::rounding_from(a, mode).0,
             BasedExpr::Based(a, basis) => {
-                if a.iter().skip(1).all(|a| a == &Rat::ZERO) {
+                if (a, basis).is_rational() {
                     f64::rounding_from(&a[0], mode).0
                 } else {
                     // Not an exact f64
@@ -39,15 +39,6 @@ impl BasedExpr {
     /// Rounds this expression to the nearset f64
     pub fn round_to_nearest_f64(&self) -> f64 {
         self.round_to_f64(RoundingMode::Nearest)
-    }
-
-    pub fn is_integer(&self) -> bool {
-        match self {
-            BasedExpr::Baseless(a) => a.is_integer(),
-            BasedExpr::Based(a, _) => {
-                a[0].is_integer() && a.iter().skip(1).all(|a| a == &Rat::ZERO)
-            }
-        }
     }
 
     pub fn try_to_integer(&self) -> Option<Integer> {

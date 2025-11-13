@@ -5,7 +5,7 @@ use exact_number::BasedExpr;
 use indexmap::{IndexMap, indexmap};
 use nalgebra::{DVector, DefaultAllocator, Dim, Dyn, OVector, Scalar, U1, Vector, VectorView, allocator::Allocator};
 
-use crate::{AtFaceCorner, Edge, EdgeData, EdgesFaceCornersEx, EdgesVerticesEx, FaceCorner, Frame, FrameAttribute, HalfEdge, Vertex, filter::Coordinate, geom::{FloatOrd, NumEx}};
+use crate::{AtFaceCorner, Edge, EdgeData, EdgesFaceCornersEx, EdgesVerticesEx, FaceCorner, Frame, FrameAttribute, HalfEdge, Vertex, filter::Coordinate, geom::{FloatOrd, NumEx}, vertices_coords};
 
 pub trait MergeCoordinate: Sized + Scalar {
     type Hash<'a, D: Dim>: Hash where
@@ -218,7 +218,7 @@ impl Frame {
     }
 
     pub fn split_edges<T: NumEx + Coordinate>(&mut self, splits: impl IntoIterator<Item = (Edge, DVector<T>)>) {
-        let vc = T::frame_to_vertices_coords(self).as_ref();
+        let vc = vertices_coords!(<T> self).as_ref();
         let ev = self.edges_vertices.as_ref().unwrap(); // needs to exist to split edges
         let mut splits = splits.into_iter().collect::<Vec<_>>();
 
@@ -320,7 +320,7 @@ impl Frame {
     /// Merges vertices that are at most `epsilon` apart.
     /// Requires the appropriate vertex coordinates to exist.
     pub fn merge_nearby_vertices<T: NumEx + Coordinate>(&mut self, epsilon: &T) {
-        let coords = T::frame_to_vertices_coords(self).as_ref().unwrap(); // required by spec
+        let coords = vertices_coords!(<T> self).as_ref().unwrap(); // required by spec
         let merger = PointMerger::new(
             (0..self.num_vertices).map(Vertex),
             |v| coords.column(v.0),
