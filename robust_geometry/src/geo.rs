@@ -57,6 +57,8 @@ const COMPLEX_INTERSECT_COMPARE_BOUND: f64 = (13.0 + 128.0 * EPSILON) * EPSILON;
 /// which is a positive number if they define a left turn,
 /// a negative number if they define a right turn,
 /// and 0 if they are collinear.
+/// 
+/// The magnifying factor is 8k^2, so all coordinates must be 0 or have an absolute value in [2^-485, 2^510]
 pub fn orient_2d(a: Vec2, b: Vec2, c: Vec2) -> f64 {
     let diag1 = (a.x - c.x) * (b.y - c.y);
     let diag2 = (a.y - c.y) * (b.x - c.x);
@@ -108,6 +110,8 @@ fn orient_2d_adapt(a: Vec2, b: Vec2, c: Vec2, det_sum: f64) -> f64 {
 /// | b.x - a.x   b.y - a.y |
 /// | d.x - c.x   d.y - c.y |
 /// ```
+/// 
+/// The magnifying factor is 8k^2, so all coordinates must be 0 or have an absolute value in [2^-485, 2^510]
 pub fn cross_2d(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> f64 {
     let diag1 = (b.x - a.x) * (d.y - c.y);
     let diag2 = (b.y - a.y) * (d.x - c.x);
@@ -303,6 +307,8 @@ macro_rules! sep_5 {
 /// which is a positive number if `b`→`c`→`d` defines a left turn when looked at from `a`,
 /// a negative number if they define a right turn,
 /// and 0 if `a`, `b`, `c`, `d` are coplanar.
+/// 
+/// The magnifying factor is 48k^3, so all coordinates must be 0 or have an absolute value in [2^-306, 2^339]
 pub fn orient_3d(a: Vec3, b: Vec3, c: Vec3, d: Vec3) -> f64 {
     // vec![[0, 1, 2], [1, 2, 0], [2, 0, 1]].into_iter().map(|[x, y, z] stuff).sum::<f64>() regressed performance a lot
     sep_xyz!(($x, $y, $z) => let cof1, cof2, cof3 = 
@@ -370,6 +376,8 @@ fn orient_3d_adapt(a: Vec3, b: Vec3, c: Vec3, d: Vec3, det_sum: f64) -> f64 {
 /// | d.x - c.x   d.y - c.y   d.z - c.z |
 /// | f.x - e.x   f.y - e.y   f.z - e.z |
 /// ```
+/// 
+/// The magnifying factor is 48k^3, so all coordinates must be 0 or have an absolute value in [2^-306, 2^339]
 pub fn cross_3d(a: Vec3, b: Vec3, c: Vec3, d: Vec3, e: Vec3, f: Vec3) -> f64 {
     // vec![[0, 1, 2], [1, 2, 0], [2, 0, 1]].into_iter().map(|[x, y, z] stuff).sum::<f64>() regressed performance a lot
     sep_xyz!(($x, $y, $z) => let cof1, cof2, cof3 = 
@@ -948,6 +956,8 @@ fn sign_det_x2y2_plus_2x_det_x_adapt(a: Vec2, b: Vec2, u: f64, i: f64, j: f64) -
 /// (a1[i] - a0[i]) | b1.x - b0.x    b0.x - a0.x | + (p[i] - a0[i]) | a1.x - a0.x    b1.x - b0.x |
 ///                 | b1.y - b0.y    b0.y - a0.y |                  | a1.y - a0.y    b1.y - b0.y |
 /// ```
+/// 
+/// The magnifying factor is 32k^3, so all coordinates must be 0 or have an absolute value in [2^-306, 2^339]
 pub fn simple_intersect_compare_i(p: Vec2, a0: Vec2, a1: Vec2, b0: Vec2, b1: Vec2, i: usize) -> f64 {
     // Implementing as 3D determinant. Optimization is premature
     -cross_3d(
@@ -972,6 +982,9 @@ pub fn simple_intersect_compare_i(p: Vec2, a0: Vec2, a1: Vec2, b0: Vec2, b1: Vec
 ///     * a negative number if *a*×*b* lies below of *c*×*d*
 ///     * a positive number if *a*×*b* lies above of *c*×*d*
 ///     * zero if *a*×*b* and *c*×*d* are on the same horizontal line (and thus are the same point)
+/// 
+/// The magnifying factor is 384k^5, so all coordinates must be 0 or have an absolute value in [2^-162, 2^203] if flushing to 0
+/// and [2^-214, 2^203] if just cutting off precision if too small
 pub fn complex_intersect_compare_i(a0: Vec2, a1: Vec2, b0: Vec2, b1: Vec2, c0: Vec2, c1: Vec2, d0: Vec2, d1: Vec2, i: usize) -> f64 {
     let d_a = a1 - a0;
     let d_b = b1 - b0;

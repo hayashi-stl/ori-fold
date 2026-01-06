@@ -1,9 +1,13 @@
 #![cfg(test)]
 
+use exact_number::BasedExpr;
 use indexmap::{indexset};
+use nalgebra::DMatrix;
+use rand_distr::{Distribution, Uniform};
+use rand_pcg::Pcg64;
 use typed_index_collections::{ti_vec};
 
-use crate::{fold::{AtFaceCorner, Edge, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesEx, EdgesVerticesSlice, FacesHalfEdges, FacesHalfEdgesSlice, Frame, FrameAttribute, HalfEdge, Vertex, VerticesHalfEdges, VerticesHalfEdgesSlice}, topology};
+use crate::{EdgeDatas, EdgesVertices, FaceDatas, VertexData, VertexDatas, VertexField, filter::Coordinate, fold::{AtFaceCorner, Edge, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesEx, EdgesVerticesSlice, FacesHalfEdges, FacesHalfEdgesSlice, Frame, FrameAttribute, HalfEdge, Vertex, VerticesHalfEdges, VerticesHalfEdgesSlice}, topology};
 
 pub(crate) fn assert_ec_fh_consistent(ec: &EdgesFaceCornersSlice, fh: &FacesHalfEdgesSlice) {
     let rip = || panic!("{ec:?} is not consistent with {fh:?}");
@@ -149,8 +153,38 @@ impl Frame {
         self.faces_half_edges = faces_half_edges;
         self
     }
+
+    pub(crate) fn init_topology_coords_exact_ev(
+        mut self,
+        vertices_coords_exact: DMatrix<BasedExpr>,
+        edges_vertices: EdgesVertices)
+    -> Self {
+        self.init_vertex_data([VertexField::CoordsExact], vertices_coords_exact.nrows());
+        self.init_edge_data([]);
+        self.add_vertices(VertexDatas { coords_exact: Some(vertices_coords_exact), ..Default::default() });
+        self.add_edges(EdgeDatas::default_with_vertices(edges_vertices.into()));
+        self
+    }
+
+    pub(crate) fn with_topology_fh(mut self, faces_half_edges: FacesHalfEdges) -> Self {
+        self.init_face_data([]);
+        self.add_faces(FaceDatas::default_with_half_edges(faces_half_edges.into()));
+        self
+    }
 }
 
+pub const PCG_STATE: u128 = 0xcafef00dd15ea5e5;
+pub const PCG_STREAM: u128 = 0xa02bdbf7bb3c0a7ac28fa16a64abf96;
+
+pub fn new_rng() -> Pcg64 {
+    Pcg64::new(PCG_STATE, PCG_STREAM)
+}
+
+pub fn fuzz_coordinates(coords: DMatrix<f64>, epsilon: f64, rng: &mut Pcg64) -> DMatrix<f64> {
+    // Deterministic, portable RNG
+    let dist = Uniform::new(-epsilon * (0.5f64).sqrt(), epsilon * (0.5f64).sqrt()).unwrap();
+    coords.map(|c| c + dist.sample(rng))
+}
 //fn setup_assert_oriented_prev_fail() -> Frame {
 //    use FrameAttribute::*;
 //    use HalfEdge as H;

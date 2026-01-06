@@ -1,8 +1,8 @@
-use std::{cmp::Ordering, f32, f64, iter::Sum, mem, ops::{Mul, Neg, Sub}};
+use std::{cmp::Ordering, iter::Sum, mem, ops::{Mul, Neg, Sub}};
 
 use duplicate::duplicate_item;
 use exact_number::{Angle, BasedExpr, angle::IntoAngle, malachite::base::num::arithmetic::traits::Sign};
-use nalgebra::{Affine2, ClosedSubAssign, Const, DefaultAllocator, Dim, DimNameAdd, DimNameSum, Dyn, Matrix2, MatrixView2xX, OVector, RealField, SVector, Scalar, TAffine, Transform, U1, U2, Vector, Vector2, VectorView, VectorView2, allocator::Allocator, matrix, vector};
+use nalgebra::{Affine2, ClosedSubAssign, Const, DefaultAllocator, Dim, DimNameAdd, DimNameSum, Dyn, Matrix2, MatrixView2xX, OVector, RealField, SVector, Scalar, Storage, TAffine, Transform, U1, U2, Vector, Vector2, VectorView, VectorView2, allocator::Allocator, matrix, vector};
 use num_traits::{Num, NumAssign, NumAssignRef, NumRef, RefNum, Signed};
 use robust_geometry as robust;
 
@@ -149,16 +149,10 @@ pub trait IntoOrdAngle<Y = Self>: {
     type RVec<'a>;
     type Output: Ord;
     /// Finds the angle of the vector `[self, y]`,
-    /// with the range [-π, π)
+    /// with the range [-π, π), returning `None` if `self` = `y` = 0.
     /// 
     /// Like `atan2`, but with x first and y second.
-    fn into_ord_angle(self, y: Y) -> Self::Output;
-
-    /// Finds the angle from vector `v0` to vector `v1`.
-    /// with the range [-π, π)
-    /// 
-    /// This gives an angle that compares equal to `(other - self).x.into_ord_angle(other - self).y`.
-    fn ord_angle_to(v0: Self::LVec<'_>, v1: Self::RVec<'_>) -> Self::Output;
+    fn into_ord_angle(self, y: Y) -> Option<Self::Output>;
 }
 
 #[duplicate_item(
@@ -172,12 +166,8 @@ impl IntoOrdAngle<f32_b> for f32_a {
     type LVec<'a> = vec_f32_a;
     type RVec<'a> = vec_f32_b;
     type Output = AngleF64;
-    fn into_ord_angle(self, y: f32_b) -> Self::Output {
+    fn into_ord_angle(self, y: f32_b) -> Option<Self::Output> {
         (val_a as f64).into_ord_angle(val_b as f64)
-    }
-
-    fn ord_angle_to(v0: Self::LVec<'_>, v1: Self::RVec<'_>) -> Self::Output {
-        AngleF64([v0.into_owned().map(|c| c as f64), v1.into_owned().map(|c| c as f64)])
     }
 }
 
@@ -192,12 +182,8 @@ impl IntoOrdAngle<f64_b> for f64_a {
     type LVec<'a> = vec_f64_a;
     type RVec<'a> = vec_f64_b;
     type Output = AngleF64;
-    fn into_ord_angle(self, y: f64_b) -> Self::Output {
-        AngleF64([Vector2::zeros(), vector![val_a, val_b]])
-    }
-
-    fn ord_angle_to(v0: Self::LVec<'_>, v1: Self::RVec<'_>) -> Self::Output {
-        AngleF64([v0.into_owned(), v1.into_owned()])
+    fn into_ord_angle(self, y: f64_b) -> Option<Self::Output> {
+        if val_a == 0.0 && val_b == 0.0 { None } else { Some(AngleF64([Vector2::zeros(), vector![val_a, val_b]])) }
     }
 }
 
@@ -212,13 +198,8 @@ impl IntoOrdAngle<ty_b> for ty_a {
     type LVec<'a> = vec_ty_a;
     type RVec<'a> = vec_ty_b;
     type Output = Angle;
-    fn into_ord_angle(self, y: ty_b) -> Self::Output {
+    fn into_ord_angle(self, y: ty_b) -> Option<Self::Output> {
         self.into_angle(y)
-    }
-
-    fn ord_angle_to(v0: Self::LVec<'_>, v1: Self::RVec<'_>) -> Self::Output {
-        let [[x, y]] = (v1 - v0).data.0;
-        y.into_ord_angle(x)
     }
 }
 
@@ -237,6 +218,115 @@ impl<Base: IntoOrdAngleOp, T:
     for<'b, 'c> IntoOrdAngle<Base, Output = <Base as IntoOrdAngle>::Output, LVec<'b> = VectorView2Dyn<'b, Base>, RVec<'c> = Vector2<Base>> +
     for<'a, 'b, 'c> IntoOrdAngle<&'a Base, Output = <Base as IntoOrdAngle>::Output, LVec<'b> = VectorView2Dyn<'b, Base>, RVec<'c> = VectorView2Dyn<'c, Base>>>
     RefIntoOrdAngleOp<Base> for T {}
+
+/// Operations involving angles in some sense, like 2D determinant and conversion into an angle
+pub trait AngleOps: NumEx + IntoOrdAngle {
+    type Det: Ord;
+    type OrdAngle: Ord;
+    /// Finds the angle from vector `v0` to vector `v1`.
+    /// with the range [-π, π), returning `None` if `v0` = `v1`.
+    /// 
+    /// This gives an angle that compares equal to `(other - self).x.into_ord_angle(other - self).y`.
+    fn ord_angle_to<S0: Storage<Self, U2>, S1: Storage<Self, U2>>(v0: Vector<Self, U2, S0>, v1: Vector<Self, U2, S1>) -> Option<Self::OrdAngle>;
+
+    /// Computes the following determinant:
+    /// ```notrust
+    /// | b.x - a.x    d.x - c.x |
+    /// | b.y - a.y    d.y - c.y |
+    /// ```
+    fn det_2d<Sa, Sb, Sc, Sd>(a: Vector<Self, U2, Sa>, b: Vector<Self, U2, Sb>, c: Vector<Self, U2, Sc>, d: Vector<Self, U2, Sd>) -> Self::Det where
+            Sa: Storage<Self, U2>,
+            Sb: Storage<Self, U2>,
+            Sc: Storage<Self, U2>,
+            Sd: Storage<Self, U2>,;
+
+    /// Computes the following determinant, comparing it to 0:
+    /// ```notrust
+    /// | b.x - a.x    d.x - c.x |
+    /// | b.y - a.y    d.y - c.y |
+    /// ```
+    fn cmp_det_2d<Sa, Sb, Sc, Sd>(a: Vector<Self, U2, Sa>, b: Vector<Self, U2, Sb>, c: Vector<Self, U2, Sc>, d: Vector<Self, U2, Sd>) -> Ordering where
+            Sa: Storage<Self, U2>,
+            Sb: Storage<Self, U2>,
+            Sc: Storage<Self, U2>,
+            Sd: Storage<Self, U2>,;
+}
+
+impl AngleOps for f32 {
+    type OrdAngle = AngleF64;
+    type Det = FloatOrd<f64>;
+
+    fn ord_angle_to<S0: Storage<Self, U2>, S1: Storage<Self, U2>>(v0: Vector<Self, U2, S0>, v1: Vector<Self, U2, S1>) -> Option<Self::OrdAngle> {
+        f64::ord_angle_to(v0.map(|c| c as f64), v1.map(|c| c as f64))
+    }
+
+    fn det_2d<Sa, Sb, Sc, Sd>(a: Vector<Self, U2, Sa>, b: Vector<Self, U2, Sb>, c: Vector<Self, U2, Sc>, d: Vector<Self, U2, Sd>) -> Self::Det where
+                Sa: Storage<Self, U2>,
+                Sb: Storage<Self, U2>,
+                Sc: Storage<Self, U2>,
+                Sd: Storage<Self, U2>, {
+        f64::det_2d(a.map(|x| x as f64), b.map(|x| x as f64), c.map(|x| x as f64), d.map(|x| x as f64))
+    }
+
+    fn cmp_det_2d<Sa, Sb, Sc, Sd>(a: Vector<Self, U2, Sa>, b: Vector<Self, U2, Sb>, c: Vector<Self, U2, Sc>, d: Vector<Self, U2, Sd>) -> Ordering where
+                Sa: Storage<Self, U2>,
+                Sb: Storage<Self, U2>,
+                Sc: Storage<Self, U2>,
+                Sd: Storage<Self, U2>, {
+        Self::det_2d(a, b, c, d).cmp(&FloatOrd(0.0))
+    }
+}
+
+impl AngleOps for f64 {
+    type OrdAngle = AngleF64;
+    type Det = FloatOrd<f64>;
+
+    fn ord_angle_to<S0: Storage<Self, U2>, S1: Storage<Self, U2>>(v0: Vector<Self, U2, S0>, v1: Vector<Self, U2, S1>) -> Option<Self::OrdAngle> {
+        if v0 == v1 { None } else { Some(AngleF64([v0.into_owned(), v1.into_owned()])) }
+    }
+
+    fn det_2d<Sa, Sb, Sc, Sd>(a: Vector<Self, U2, Sa>, b: Vector<Self, U2, Sb>, c: Vector<Self, U2, Sc>, d: Vector<Self, U2, Sd>) -> Self::Det where
+                Sa: Storage<Self, U2>,
+                Sb: Storage<Self, U2>,
+                Sc: Storage<Self, U2>,
+                Sd: Storage<Self, U2>, {
+        FloatOrd(robust::cross_2d(a.into_owned(), b.into_owned(), c.into_owned(), d.into_owned()))
+    }
+
+    fn cmp_det_2d<Sa, Sb, Sc, Sd>(a: Vector<Self, U2, Sa>, b: Vector<Self, U2, Sb>, c: Vector<Self, U2, Sc>, d: Vector<Self, U2, Sd>) -> Ordering where
+                Sa: Storage<Self, U2>,
+                Sb: Storage<Self, U2>,
+                Sc: Storage<Self, U2>,
+                Sd: Storage<Self, U2>, {
+        Self::det_2d(a, b, c, d).cmp(&FloatOrd(0.0))
+    }
+}
+
+impl AngleOps for BasedExpr {
+    type OrdAngle = Angle;
+    type Det = BasedExpr;
+
+    fn ord_angle_to<S0: Storage<Self, U2>, S1: Storage<Self, U2>>(v0: Vector<Self, U2, S0>, v1: Vector<Self, U2, S1>) -> Option<Self::OrdAngle> {
+        let [[x, y]] = (v1 - v0).data.0;
+        y.into_ord_angle(x)
+    }
+
+    fn det_2d<Sa, Sb, Sc, Sd>(a: Vector<Self, U2, Sa>, b: Vector<Self, U2, Sb>, c: Vector<Self, U2, Sc>, d: Vector<Self, U2, Sd>) -> Self::Det where
+                Sa: Storage<Self, U2>,
+                Sb: Storage<Self, U2>,
+                Sc: Storage<Self, U2>,
+                Sd: Storage<Self, U2>, {
+        (b - a).perp(&(d - c))
+    }
+
+    fn cmp_det_2d<Sa, Sb, Sc, Sd>(a: Vector<Self, U2, Sa>, b: Vector<Self, U2, Sb>, c: Vector<Self, U2, Sc>, d: Vector<Self, U2, Sd>) -> Ordering where
+                Sa: Storage<Self, U2>,
+                Sb: Storage<Self, U2>,
+                Sc: Storage<Self, U2>,
+                Sd: Storage<Self, U2>, {
+        Self::det_2d(a, b, c, d).cmp_zero()
+    }
+}
 
 /// Converts a type into an orderable type.
 /// Unfortunately only implemented for a few types due to lack of the understanding
@@ -282,16 +372,39 @@ impl IntoOrd for BasedExpr {
     fn slice_to_ord(slice: &[Self]) -> &[Self::Output] { slice }
 }
 
-/// Gets the angle of a vector, even with exact coordinates.
+pub const fn pow2i(exp: i32) -> f64 {
+    if exp < (f64::MIN_EXP - 1) - (f64::MANTISSA_DIGITS - 1) as i32 {
+        panic!("exponent is too small")
+    } else if exp < f64::MIN_EXP - 1 {
+        f64::from_bits(1 << (exp - ((f64::MIN_EXP - 1) - (f64::MANTISSA_DIGITS - 1) as i32)))
+    } else if exp <= f64::MAX_EXP - 1 {
+        f64::from_bits(((exp - (f64::MIN_EXP - 2)) as u64) << (f64::MANTISSA_DIGITS - 1))
+    } else {
+        panic!("exponent is too big")
+    }
+}
+
+/// Rounds the float to one that's a multiple of 2^`lsb`, rounding ties to even.
+pub fn with_max_lsb(this: f64, lsb: i32) -> f64 {
+    let min_mag = pow2i(lsb + f64::MANTISSA_DIGITS as i32 - 1);
+    let prec = pow2i(lsb);
+    if this.abs() < min_mag {
+        (this / prec).round_ties_even() * prec
+    } else {
+        this
+    }
+}
+
+/// Gets the angle of a vector, even with exact coordinates. Returns None for the zero vector.
 /// Use this instead of [`Vector2::angle`].
-pub fn angle<T: IntoAngle>(vector: Vector2<T>) -> T::Output {
+pub fn angle<T: IntoAngle>(vector: Vector2<T>) -> Option<T::Output> {
     let [[x, y]] = vector.data.0;
     x.into_angle(y)
 }
 
-/// Gets the angle of a vector, even with exact coordinates.
+/// Gets the angle of a vector, even with exact coordinates. Returns None for hte zero vector.
 /// Use this instead of [`Vector2::angle`].
-pub fn angle_ref<T>(vector: VectorView2Dyn<'_, T>) -> <&T as IntoAngle>::Output where
+pub fn angle_ref<T>(vector: VectorView2Dyn<'_, T>) -> Option<<&T as IntoAngle>::Output> where
     for<'a> &'a T: IntoAngle
 {
     let slice = vector.data.into_slice();
@@ -299,13 +412,15 @@ pub fn angle_ref<T>(vector: VectorView2Dyn<'_, T>) -> <&T as IntoAngle>::Output 
 }
 
 /// Gets the orderable angle of a vector, even with exact coordinates.
-pub fn ord_angle<T: IntoOrdAngle>(vector: Vector2<T>) -> T::Output {
+/// Returns None for the zero vector.
+pub fn ord_angle<T: IntoOrdAngle>(vector: Vector2<T>) -> Option<T::Output> {
     let [[x, y]] = vector.data.0;
     x.into_ord_angle(y)
 }
 
 /// Gets the orderable angle of a vector, even with exact coordinates.
-pub fn ord_angle_ref<T>(vector: VectorView2Dyn<'_, T>) -> <&T as IntoOrdAngle>::Output where
+/// Returns None for the zero vector.
+pub fn ord_angle_ref<T>(vector: VectorView2Dyn<'_, T>) -> Option<<&T as IntoOrdAngle>::Output> where
     for<'a> &'a T: IntoOrdAngle
 {
     let slice = vector.data.into_slice();
@@ -354,8 +469,7 @@ pub fn sort_by_angle_field<T, S, F: FnMut(&T) -> VectorView2Dyn<S>>(points: &mut
 /// via computing sum of signed areas of triangles formed with origin
 /// Assumes the polygon is simple (no self-touching) and nonempty
 pub fn polygon_orientation<T, S, F: FnMut(&T) -> Vector2<S>>(points: &[T], mut mapping: F) -> i32 where
-    S: IntoOrd + Scalar + ClosedSubAssign + IntoOrdAngleOp,
-    for<'b> &'b S: RefIntoOrdAngleOp<S>,
+    S: IntoOrd + Scalar + ClosedSubAssign + AngleOps,
 {
     let left_bottom = points.iter().enumerate()
         .min_by_key(|(_, point)| S::array_to_ord({let [arr] = mapping(*point).data.0; arr}))
@@ -363,7 +477,7 @@ pub fn polygon_orientation<T, S, F: FnMut(&T) -> Vector2<S>>(points: &[T], mut m
     let p0 = mapping(&points[(left_bottom + points.len() - 1) % points.len()]);
     let p1 = mapping(&points[left_bottom]);
     let p2 = mapping(&points[(left_bottom + 1) % points.len()]);
-    match <&S as IntoOrdAngle<S>>::ord_angle_to(p0.as_view(), p1).cmp(&<S as IntoOrdAngle<S>>::ord_angle_to(p0, p2)) {
+    match S::cmp_det_2d(p0.as_view::<U2, U1, U1, Dyn>(), p1, p0.as_view::<U2, U1, U1, Dyn>(), p2) {
         Ordering::Less => -1,
         Ordering::Equal => 0,
         Ordering::Greater => 1,
@@ -373,9 +487,9 @@ pub fn polygon_orientation<T, S, F: FnMut(&T) -> Vector2<S>>(points: &[T], mut m
 /// Returns the orientation of the 2D polygon defined by the input points.
 /// +1 for counterclockwise, -1 for clockwise
 /// via computing sum of signed areas of triangles formed with origin
+/// Assumes the polygon is simple (no self-touching) and nonempty
 pub fn polygon_orientation_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(points: &[T], mut mapping: F) -> i32 where
-    S: 'a + IntoOrd + Scalar + ClosedSubAssign + IntoOrdAngleOp,
-    for<'b> &'b S: RefIntoOrdAngleOp<S>,
+    S: 'a + IntoOrd + Scalar + ClosedSubAssign + AngleOps,
 {
     let left_bottom = points.iter().enumerate()
         .min_by_key(|(_, point)| S::slice_to_ord(mapping(*point).data.into_slice()))
@@ -383,7 +497,7 @@ pub fn polygon_orientation_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(
     let p0 = mapping(&points[(left_bottom + points.len() - 1) % points.len()]);
     let p1 = mapping(&points[left_bottom]);
     let p2 = mapping(&points[(left_bottom + 1) % points.len()]);
-    match <&S as IntoOrdAngle<&S>>::ord_angle_to(p0.clone(), p1).cmp(&<&S as IntoOrdAngle<&S>>::ord_angle_to(p0, p2)) {
+    match S::cmp_det_2d(p0.clone(), p1, p0.clone(), p2) {
         Ordering::Less => -1,
         Ordering::Equal => 0,
         Ordering::Greater => 1,
@@ -393,9 +507,9 @@ pub fn polygon_orientation_ref<'a, T, S, F: FnMut(&T) -> VectorView2Dyn<'a, S>>(
 /// Returns the orientation of the 2D polygon defined by the input points.
 /// +1 for counterclockwise, -1 for clockwise
 /// via computing sum of signed areas of triangles formed with origin
+/// Assumes the polygon is simple (no self-touching) and nonempty
 pub fn polygon_orientation_field<T, S, F: FnMut(&T) -> VectorView2Dyn<S>>(points: &[T], mut mapping: F) -> i32 where
-    S: IntoOrd + Scalar + ClosedSubAssign + IntoOrdAngleOp,
-    for<'b> &'b S: RefIntoOrdAngleOp<S>,
+    S: IntoOrd + Scalar + ClosedSubAssign + AngleOps,
 {
     let left_bottom = points.iter().enumerate()
         .min_by_key(|(_, point)| S::slice_to_ord(mapping(*point).data.into_slice()))
@@ -403,7 +517,7 @@ pub fn polygon_orientation_field<T, S, F: FnMut(&T) -> VectorView2Dyn<S>>(points
     let p0 = mapping(&points[(left_bottom + points.len() - 1) % points.len()]);
     let p1 = mapping(&points[left_bottom]);
     let p2 = mapping(&points[(left_bottom + 1) % points.len()]);
-    match <&S as IntoOrdAngle<&S>>::ord_angle_to(p0.clone(), p1).cmp(&<&S as IntoOrdAngle<&S>>::ord_angle_to(p0, p2)) {
+    match S::cmp_det_2d(p0.clone(), p1, p0.clone(), p2) {
         Ordering::Less => -1,
         Ordering::Equal => 0,
         Ordering::Greater => 1,
@@ -606,7 +720,7 @@ mod test {
     use exact_number::{based_expr};
     use nalgebra::{Affine2, ClosedSubAssign, Matrix2xX, Scalar, U2, Vector2, matrix, vector};
 
-    use crate::geom::{IntoOrd, IntoOrdAngle, IntoOrdAngleOp, RefIntoOrdAngleOp, SegmentIntersection, VectorView2Dyn, polygon_orientation, polygon_orientation_field, polygon_orientation_ref, reflect_line, reflect_line_matrix, segment_intersect, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix};
+    use crate::geom::{AngleOps, IntoOrd, IntoOrdAngle, IntoOrdAngleOp, RefIntoOrdAngleOp, SegmentIntersection, VectorView2Dyn, polygon_orientation, polygon_orientation_field, polygon_orientation_ref, pow2i, reflect_line, reflect_line_matrix, segment_intersect, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix, with_max_lsb};
 
     /// Gets the permutation required to take `a` to `b`.
     /// `permutation(a, b).0[i] == i`
@@ -618,43 +732,60 @@ mod test {
             .collect::<Vec<_>>();
         (indexes, perm)
     }
+
+    #[test]
+    fn test_pow2i() {
+        // There aren't that many; test every valid exponent. Every single one.
+        for exp in (-1074)..=1023 {
+            assert_eq!(pow2i(exp), if exp < 0 { 0.5f64.powi(-exp) } else { 2f64.powi(exp) }, "failed for exp={}", exp);
+        }
+    }
+
+    #[test]
+    fn test_with_max_lsb() {
+        assert_eq!(with_max_lsb(0.0, -100), 0.0);
+        assert_eq!(with_max_lsb(1.0, -100), 1.0);
+        assert_eq!(with_max_lsb(pow2i(-100), -100), pow2i(-100));
+        assert_eq!(with_max_lsb(pow2i(-101), -100), 0.0); // break ties toward even
+        assert_eq!(with_max_lsb(pow2i(-101) * 1.5, -100), pow2i(-100));
+        assert_eq!(with_max_lsb(pow2i(-48) + pow2i(-100), -100), pow2i(-48) + pow2i(-100));
+    }
     
     #[test]
     fn test_cmp_angle_f64() {
         let angles = vec![
-            ( 0, (-1.0f64).into_ord_angle( 0.0f64)),
-            ( 0, (-2.0f64).into_ord_angle( 0.0f64)),
-            ( 1, (-2.0f64).into_ord_angle(-1.0f64)),
-            ( 1, (-4.0f64).into_ord_angle(-2.0f64)),
-            ( 2, (-1.0f64).into_ord_angle(-1.0f64)),
-            ( 2, (-2.0f64).into_ord_angle(-2.0f64)),
-            ( 3, (-1.0f64).into_ord_angle(-2.0f64)),
-            ( 3, (-2.0f64).into_ord_angle(-4.0f64)),
-            ( 4, ( 0.0f64).into_ord_angle(-1.0f64)),
-            ( 4, ( 0.0f64).into_ord_angle(-2.0f64)),
-            ( 5, ( 1.0f64).into_ord_angle(-2.0f64)),
-            ( 5, ( 2.0f64).into_ord_angle(-4.0f64)),
-            ( 6, ( 1.0f64).into_ord_angle(-1.0f64)),
-            ( 6, ( 2.0f64).into_ord_angle(-2.0f64)),
-            ( 7, ( 2.0f64).into_ord_angle(-1.0f64)),
-            ( 7, ( 4.0f64).into_ord_angle(-2.0f64)),
-            ( 8, ( 0.0f64).into_ord_angle( 0.0f64)),
-            ( 8, ( 1.0f64).into_ord_angle( 0.0f64)),
-            ( 8, ( 2.0f64).into_ord_angle( 0.0f64)),
-            ( 9, ( 2.0f64).into_ord_angle( 1.0f64)),
-            ( 9, ( 4.0f64).into_ord_angle( 2.0f64)),
-            (10, ( 1.0f64).into_ord_angle( 1.0f64)),
-            (10, ( 2.0f64).into_ord_angle( 2.0f64)),
-            (11, ( 1.0f64).into_ord_angle( 2.0f64)),
-            (11, ( 2.0f64).into_ord_angle( 4.0f64)),
-            (12, ( 0.0f64).into_ord_angle( 1.0f64)),
-            (12, ( 0.0f64).into_ord_angle( 2.0f64)),
-            (13, (-1.0f64).into_ord_angle( 2.0f64)),
-            (13, (-2.0f64).into_ord_angle( 4.0f64)),
-            (14, (-1.0f64).into_ord_angle( 1.0f64)),
-            (14, (-2.0f64).into_ord_angle( 2.0f64)),
-            (15, (-2.0f64).into_ord_angle( 1.0f64)),
-            (15, (-4.0f64).into_ord_angle( 2.0f64)),
+            ( 0, (-1.0f64).into_ord_angle( 0.0f64).unwrap()),
+            ( 0, (-2.0f64).into_ord_angle( 0.0f64).unwrap()),
+            ( 1, (-2.0f64).into_ord_angle(-1.0f64).unwrap()),
+            ( 1, (-4.0f64).into_ord_angle(-2.0f64).unwrap()),
+            ( 2, (-1.0f64).into_ord_angle(-1.0f64).unwrap()),
+            ( 2, (-2.0f64).into_ord_angle(-2.0f64).unwrap()),
+            ( 3, (-1.0f64).into_ord_angle(-2.0f64).unwrap()),
+            ( 3, (-2.0f64).into_ord_angle(-4.0f64).unwrap()),
+            ( 4, ( 0.0f64).into_ord_angle(-1.0f64).unwrap()),
+            ( 4, ( 0.0f64).into_ord_angle(-2.0f64).unwrap()),
+            ( 5, ( 1.0f64).into_ord_angle(-2.0f64).unwrap()),
+            ( 5, ( 2.0f64).into_ord_angle(-4.0f64).unwrap()),
+            ( 6, ( 1.0f64).into_ord_angle(-1.0f64).unwrap()),
+            ( 6, ( 2.0f64).into_ord_angle(-2.0f64).unwrap()),
+            ( 7, ( 2.0f64).into_ord_angle(-1.0f64).unwrap()),
+            ( 7, ( 4.0f64).into_ord_angle(-2.0f64).unwrap()),
+            ( 8, ( 1.0f64).into_ord_angle( 0.0f64).unwrap()),
+            ( 8, ( 2.0f64).into_ord_angle( 0.0f64).unwrap()),
+            ( 9, ( 2.0f64).into_ord_angle( 1.0f64).unwrap()),
+            ( 9, ( 4.0f64).into_ord_angle( 2.0f64).unwrap()),
+            (10, ( 1.0f64).into_ord_angle( 1.0f64).unwrap()),
+            (10, ( 2.0f64).into_ord_angle( 2.0f64).unwrap()),
+            (11, ( 1.0f64).into_ord_angle( 2.0f64).unwrap()),
+            (11, ( 2.0f64).into_ord_angle( 4.0f64).unwrap()),
+            (12, ( 0.0f64).into_ord_angle( 1.0f64).unwrap()),
+            (12, ( 0.0f64).into_ord_angle( 2.0f64).unwrap()),
+            (13, (-1.0f64).into_ord_angle( 2.0f64).unwrap()),
+            (13, (-2.0f64).into_ord_angle( 4.0f64).unwrap()),
+            (14, (-1.0f64).into_ord_angle( 1.0f64).unwrap()),
+            (14, (-2.0f64).into_ord_angle( 2.0f64).unwrap()),
+            (15, (-2.0f64).into_ord_angle( 1.0f64).unwrap()),
+            (15, (-4.0f64).into_ord_angle( 2.0f64).unwrap()),
         ];
 
         for &(ord_a, angle_a) in &angles {
@@ -698,8 +829,7 @@ mod test {
 
     fn polygon_orientation_test<T, S>(points: Vec<T>, mut mapping: impl FnMut(&T) -> VectorView2Dyn<S>, expected: i32) where
         T: Clone + Debug + PartialEq,
-        S: IntoOrd + Scalar + ClosedSubAssign + IntoOrdAngleOp,
-        for<'b> &'b S: RefIntoOrdAngleOp<S>,
+        S: IntoOrd + Scalar + ClosedSubAssign + AngleOps,
     {
         let indexes = (0..points.len()).collect::<Vec<_>>();
         let result = polygon_orientation_ref(&indexes, |i| mapping(&points[*i]));
@@ -788,12 +918,6 @@ mod test {
             vector![0.0, 4.0],
             vector![5.0, 9.0],
             vector![2.0, 7.0],
-        ], |v| v.as_view(), 1);
-        polygon_orientation_test(vec![
-            vector![0.0, 3.0],
-            vector![-1.0, 5.0],
-            vector![3.0, 1.0],
-            vector![5.0, 8.0],
         ], |v| v.as_view(), 1);
         polygon_orientation_test(vec![
             vector![based_expr!(9/2), based_expr!(1)],

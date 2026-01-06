@@ -236,6 +236,8 @@ impl Frame {
         for (e, at) in splits {
             self.split_edge(e, at);
         }
+
+        println!("Frame: {self:?}");
     }
 
     /// Merges `vertex` into `target`, swap-removing `vertex`.
@@ -259,6 +261,7 @@ impl Frame {
             for &h in &vh[vertex] {
                 *ev.at_mut(h)[0] = target;
             }
+            println!("vertex: {vertex}, target: {target}, frame: {vh:?} {ev:?}");
             let vh_vertex = mem::take(&mut vh[vertex]);
             vh[target].extend(vh_vertex);
 
@@ -314,11 +317,14 @@ impl Frame {
         }
 
         // Whew, after all that topology fixing, we can *finally* remove the vertex
-        self.swap_remove_vertex(dbg!(vertex));
+        self.swap_remove_vertex(vertex);
     }
 
     /// Merges vertices that are at most `epsilon` apart.
     /// Requires the appropriate vertex coordinates to exist.
+    /// 
+    /// Whenever two vertices merge, the one with the higher index
+    /// merges with the one with the lower index.
     pub fn merge_nearby_vertices<T: NumEx + Coordinate>(&mut self, epsilon: &T) {
         let coords = vertices_coords!(<T> self).as_ref().unwrap(); // required by spec
         let merger = PointMerger::new(
@@ -335,10 +341,13 @@ impl Frame {
                 *merge_map.get_mut(&v).unwrap() = target;
             }
         }
-        merge_map.sort_by_key(|_, v| *v);
+        merge_map.sort_by_key(|v, _| *v);
 
-        for (target, vertex) in merge_map.into_iter().rev() {
-            self.merge_two_vertices(vertex, target);
+        for (vertex, target) in merge_map.into_iter().rev() {
+            if vertex != target {
+                println!("Merging {vertex} → {target}");
+                self.merge_two_vertices(vertex, target);
+            }
         }
     }
 
@@ -410,7 +419,9 @@ impl Frame {
         merges.reverse();
 
         for (edge, target) in merges {
-            self.merge_two_edges(edge, target);
+            if edge != target {
+                self.merge_two_edges(edge, target);
+            }
         }
     }
 }

@@ -2,7 +2,7 @@ use std::{cmp::{Ordering, Reverse}, collections::BinaryHeap, marker::PhantomData
 
 use exact_number::BasedExpr;
 use indexmap::{IndexMap, indexmap};
-use nalgebra::{DVector, Dyn, RawStorage, RealField, Vector2, vector};
+use nalgebra::{ArrayStorage, DVector, Dyn, RawStorage, RealField, Vector2, vector};
 use num_traits::{RefNum, Zero};
 use robust_geometry as robust;
 
@@ -440,6 +440,17 @@ impl Ord for PosF64 {
     }
 }
 
+/// An error that results when trying to intersect segments
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq, PartialOrd, Ord))] // Really no point in this derivation outside of tests
+pub enum IntersectAllSegmentsError<E, T> {
+    /// A coordinate is too big and would thus overflow in a predicate computation.
+    CoordinateTooBig { edge: E, coord: T },
+    /// A coordinate is too close to 0 and would thus underflow in a predicate computation,
+    /// and `epsilon` isn't big enough to just allow flushing to 0.
+    CoordinateTooSmall { edge: E, coord: T, epsilon: T },
+}
+
 pub trait IntersectCoordinate: NumEx + RealField {
     type Event<'a, E: Eq + Clone>: Ord + Event<E = E, N = Self>;
     type Pos: Ord;
@@ -457,7 +468,26 @@ pub trait IntersectCoordinate: NumEx + RealField {
         F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
     >(edges: impl IntoIterator<Item = E>, mapping: F, epsilon: &Self) -> Vec<(E, Vector2<Self>)> where
         for<'b> &'b Self: RefNum<Self>;
+    
+    ///// Tries to find the splits between a bunch of segments in a way that's robust to perturbances
+    //fn try_intersect_all_segments_ref<'a,
+    //    E: Eq + Clone + Hash + 'a,
+    //    F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
+    //>(edges: impl IntoIterator<Item = E>, mapping: F, epsilon: &Self) -> Result<Vec<(E, Vector2<Self>)>, Vec<IntersectAllSegmentsError<E, Self>>> where
+    //    for<'b> &'b Self: RefNum<Self>;
 }
+
+static ZERO_VECTOR: Vector2<f64> = Vector2::new(0.0, 0.0);
+
+/// Precision bound for coordinates used in [`intersect_all_segments_ref`].
+/// The algorithm may panic or do weird things if coordinates aren't all a multiple of this number.
+pub const INTERSECT_ALL_SEGMENTS_LOWER: f64 = geom::pow2i(INTERSECT_ALL_SEGMENTS_LOWER_EXP);
+pub const INTERSECT_ALL_SEGMENTS_LOWER_EXP: i32 = -214;
+
+/// Upper bound for coordinates used in [`intersect_all_segments_ref`].
+/// The algorithm may panic due to overflow if coordinates are at least this big.
+pub const INTERSECT_ALL_SEGMENTS_UPPER: f64 = geom::pow2i(INTERSECT_ALL_SEGMENTS_UPPER_EXP);
+pub const INTERSECT_ALL_SEGMENTS_UPPER_EXP: i32 = 203;
 
 impl IntersectCoordinate for f64 {
     type Event<'a, E: Eq + Clone> = EventF64<E>;
@@ -474,6 +504,35 @@ impl IntersectCoordinate for f64 {
         let seg = sort_segment(mapping(segment).map(|p| p.into_owned()));
         AngleF64(seg)
     }
+
+    // TODO: Probably just copy the coordinates so we can have values to reference when small coordinates are made to lose precision.
+    // Otherwise, we'd need a value type for f64 and a reference type for BasedExpr, and that's annoying.
+    //fn try_intersect_all_segments_ref<'a,
+    //        E: Eq + Clone + Hash + 'a,
+    //        F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
+    //    >(edges: impl IntoIterator<Item = E>, mapping: F, epsilon: &Self) -> Result<Vec<(E, Vector2<Self>)>, Vec<IntersectAllSegmentsError<E, Self>>> where
+    //        for<'b> &'b Self: RefNum<Self>
+    //{
+    //    let edges = edges.into_iter().collect::<Vec<_>>();
+    //    let mut errors = vec![];
+    //    let mut new_epsilon = None;
+    //    for e in &edges {
+    //        let segment = mapping(e);
+    //        for &coord in segment.into_iter().flat_map(|vec| vec.into_iter()) {
+    //            if coord.abs() >= f64::powi(2.0, 203) {
+    //                errors.push(IntersectAllSegmentsError::CoordinateTooBig{ edge: e.clone(), coord });
+    //            } else if coord != 0.0 && coord.abs() < lower_bound { // strict limit here because we'll flush to 0
+    //                new_epsilon = Some(epsilon - lower_bound); // don't overshoot after flushing to 0
+    //                if *epsilon < 0.0 {
+    //                    errors.push(IntersectAllSegmentsError::CoordinateTooSmall{ edge: e.clone(), coord, epsilon: *epsilon });
+    //                }
+    //            }
+    //        }
+    //    }
+    //    if errors.is_empty() {
+    //        Ok(Self::intersect_all_segments_ref(edges, mapping, &new_epsilon.unwrap_or(*epsilon)))
+    //    } else { Err(errors) }
+    //}
 
     /// The tricky one.
     /// We add perpendicular serifs of length `epsilon` to each end of each segment,
@@ -528,6 +587,8 @@ impl IntersectCoordinate for f64 {
             let mut sum = Vector2::zeros();
             //println!("ps: {ps:?}, start: {start:?}, epsilon: {epsilon}");
             for point in ps {
+                // TODO: Handle the specific case where `point` is the endpoint of a serif. Probably use
+                // a robust geometric predicate like `incircle` (but not `incircle` itself; the arguments are different)
                 let weight = (epsilon * epsilon - (start - point).norm_squared()).max(0.0);
                 sum += point * weight;
                 total_weight += weight;
@@ -591,6 +652,15 @@ impl IntersectCoordinate for BasedExpr {
             ReverseOption::Some(((&p1.y - &p0.y) / denom).into())
         }
     }
+
+    //fn try_intersect_all_segments_ref<'a,
+    //        E: Eq + Clone + Hash + 'a,
+    //        F: Fn(&E) -> [VectorView2Dyn<'a, Self>; 2] + Clone
+    //    >(edges: impl IntoIterator<Item = E>, mapping: F, epsilon: &Self) -> Result<Vec<(E, Vector2<Self>)>, Vec<IntersectAllSegmentsError<E, Self>>> where
+    //        for<'b> &'b Self: RefNum<Self>
+    //{
+    //    Ok(Self::intersect_all_segments_ref(edges, mapping, epsilon))
+    //}
 
     fn intersect_all_segments_ref<'a,
             E: Eq + Clone + Hash + 'a,

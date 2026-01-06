@@ -33,7 +33,8 @@ impl Angle {
         Self { turn_value, tan }
     }
 
-    pub fn from_xy<X, Y>(x: X, y: Y) -> Self where X: IntoAngle<Y, Output = Self> {
+    /// Gets the angle of the vector `[x, y]`. Returns `None` if that is the zero vector.
+    pub fn from_xy<X, Y>(x: X, y: Y) -> Option<Self> where X: IntoAngle<Y, Output = Self> {
         x.into_angle(y)
     }
 
@@ -63,31 +64,31 @@ impl Angle {
 pub trait IntoAngle<Y = Self> {
     type Output;
     /// Finds the angle of the vector `[self, y]`,
-    /// with the range [-π, π)
+    /// with the range [-π, π), returning `None` if `self` = `y` = 0.
     /// 
     /// Like `atan2`, but with x first and y second.
-    fn into_angle(self, y: Y) -> Self::Output;
+    fn into_angle(self, y: Y) -> Option<Self::Output>;
 }
 
 impl IntoAngle<f32> for f32 {
     type Output = f32;
-    fn into_angle(self, y: Self) -> Self::Output {
-        if self < 0.0 && y == 0.0 { -PI_F32 } else { y.atan2(self) }
+    fn into_angle(self, y: Self) -> Option<Self::Output> {
+        if self == 0.0 && y == 0.0 { None } else { Some(if self < 0.0 && y == 0.0 { -PI_F32 } else { y.atan2(self) }) }
     }
 }
-impl IntoAngle<&f32> for f32 { type Output = f32; fn into_angle(self, y: &f32) -> Self::Output { self.into_angle(*y) } }
-impl IntoAngle<f32> for &f32 { type Output = f32; fn into_angle(self, y: f32) -> Self::Output { (*self).into_angle(y) } }
-impl IntoAngle<&f32> for &f32 { type Output = f32; fn into_angle(self, y: &f32) -> Self::Output { (*self).into_angle(*y) } }
+impl IntoAngle<&f32> for f32 { type Output = f32; fn into_angle(self, y: &f32)  -> Option<Self::Output> { self.into_angle(*y) } }
+impl IntoAngle<f32> for &f32 { type Output = f32; fn into_angle(self, y: f32)   -> Option<Self::Output> { (*self).into_angle(y) } }
+impl IntoAngle<&f32> for &f32 { type Output = f32; fn into_angle(self, y: &f32) -> Option<Self::Output> { (*self).into_angle(*y) } }
 
 impl IntoAngle<f64> for f64 {
     type Output = f64;
-    fn into_angle(self, y: Self) -> Self::Output {
-        if self < 0.0 && y == 0.0 { -PI_F64 } else { y.atan2(self) }
+    fn into_angle(self, y: Self) -> Option<Self::Output> {
+        if self == 0.0 && y == 0.0 { None } else { Some(if self < 0.0 && y == 0.0 { -PI_F64 } else { y.atan2(self) }) }
     }
 }
-impl IntoAngle<&f64> for f64 { type Output = f64; fn into_angle(self, y: &f64) -> Self::Output { self.into_angle(*y) } }
-impl IntoAngle<f64> for &f64 { type Output = f64; fn into_angle(self, y: f64) -> Self::Output { (*self).into_angle(y) } }
-impl IntoAngle<&f64> for &f64 { type Output = f64; fn into_angle(self, y: &f64) -> Self::Output { (*self).into_angle(*y) } }
+impl IntoAngle<&f64> for f64 { type Output = f64; fn into_angle(self, y: &f64)  -> Option<Self::Output> { self.into_angle(*y) } }
+impl IntoAngle<f64> for &f64 { type Output = f64; fn into_angle(self, y: f64)   -> Option<Self::Output> { (*self).into_angle(y) } }
+impl IntoAngle<&f64> for &f64 { type Output = f64; fn into_angle(self, y: &f64) -> Option<Self::Output> { (*self).into_angle(*y) } }
 
 fn turn_and_00(x: &BasedExpr, y: &BasedExpr) -> (i32, bool) {
     let x_sign = x.cmp_zero();
@@ -104,41 +105,41 @@ fn turn_and_00(x: &BasedExpr, y: &BasedExpr) -> (i32, bool) {
 
 impl IntoAngle<BasedExpr> for BasedExpr {
     type Output = Angle;
-    fn into_angle(self, y: BasedExpr) -> Self::Output {
+    fn into_angle(self, y: BasedExpr) -> Option<Self::Output> {
         let x = self;
         let (turn_value, zeros) = turn_and_00(&x, &y);
-        let tan = if zeros { Some(x) } else { y.checked_div(x) };
-        Angle::new(turn_value, tan)
+        let tan = if zeros { None } else { Some(y.checked_div(x)) };
+        tan.map(|tan| Angle::new(turn_value, tan))
     }
 }
 
 impl IntoAngle<&BasedExpr> for BasedExpr {
     type Output = Angle;
-    fn into_angle(self, y: &BasedExpr) -> Self::Output {
+    fn into_angle(self, y: &BasedExpr) -> Option<Self::Output> {
         let x = self;
         let (turn_value, zeros) = turn_and_00(&x, &y);
-        let tan = if zeros { Some(x) } else { y.checked_div(x) };
-        Angle::new(turn_value, tan)
+        let tan = if zeros { None } else { Some(y.checked_div(x)) };
+        tan.map(|tan| Angle::new(turn_value, tan))
     }
 }
 
 impl IntoAngle<BasedExpr> for &BasedExpr {
     type Output = Angle;
-    fn into_angle(self, y: BasedExpr) -> Self::Output {
+    fn into_angle(self, y: BasedExpr) -> Option<Self::Output> {
         let x = self;
         let (turn_value, zeros) = turn_and_00(&x, &y);
-        let tan = if zeros { Some(y) } else { y.checked_div(x) };
-        Angle::new(turn_value, tan)
+        let tan = if zeros { None } else { Some(y.checked_div(x)) };
+        tan.map(|tan| Angle::new(turn_value, tan))
     }
 }
 
 impl IntoAngle<&BasedExpr> for &BasedExpr {
     type Output = Angle;
-    fn into_angle(self, y: &BasedExpr) -> Self::Output {
+    fn into_angle(self, y: &BasedExpr) -> Option<Self::Output> {
         let x = self;
         let (turn_value, zeros) = turn_and_00(&x, &y);
-        let tan = if zeros { Some(x.clone()) } else { y.checked_div(x) };
-        Angle::new(turn_value, tan)
+        let tan = if zeros { None } else { Some(y.checked_div(x)) };
+        tan.map(|tan| Angle::new(turn_value, tan))
     }
 }
 
@@ -359,7 +360,7 @@ mod test {
         assert_eq!(&b + &a, expected);
     }
 
-    fn into_angle_test(x: BasedExpr, y: BasedExpr, expected: Angle) {
+    fn into_angle_test(x: BasedExpr, y: BasedExpr, expected: Option<Angle>) {
         assert_eq!(x.clone().into_angle(y.clone()), expected);
         assert_eq!(x.clone().into_angle(&y), expected);
         assert_eq!((&x).into_angle(y.clone()), expected);
@@ -368,47 +369,61 @@ mod test {
         // Also check the float implementations
         let x = x.round_to_nearest_f64();
         let y = y.round_to_nearest_f64();
-        let expected = expected.to_f64_unspecified();
-        assert_relative_eq!(x.into_angle(y), expected);
-        assert_relative_eq!(x.into_angle(&y), expected);
-        assert_relative_eq!((&x).into_angle(y), expected);
-        assert_relative_eq!((&x).into_angle(&y), expected);
+        let expected = expected.map(|e| e.to_f64_unspecified());
+        if let Some(expected) = expected {
+            assert_relative_eq!(x.into_angle(y).unwrap(), expected);
+            assert_relative_eq!(x.into_angle(&y).unwrap(), expected);
+            assert_relative_eq!((&x).into_angle(y).unwrap(), expected);
+            assert_relative_eq!((&x).into_angle(&y).unwrap(), expected);
 
-        let x = x as f32;
-        let y = y as f32;
-        let expected = expected as f32;
-        assert_relative_eq!(x.into_angle(y), expected);
-        assert_relative_eq!(x.into_angle(&y), expected);
-        assert_relative_eq!((&x).into_angle(y), expected);
-        assert_relative_eq!((&x).into_angle(&y), expected);
+            let x = x as f32;
+            let y = y as f32;
+            let expected = expected as f32;
+            assert_relative_eq!(x.into_angle(y).unwrap(), expected);
+            assert_relative_eq!(x.into_angle(&y).unwrap(), expected);
+            assert_relative_eq!((&x).into_angle(y).unwrap(), expected);
+            assert_relative_eq!((&x).into_angle(&y).unwrap(), expected);
+        } else {
+            assert_eq!(x.into_angle(y), None);
+            assert_eq!(x.into_angle(&y), None);
+            assert_eq!((&x).into_angle(y), None);
+            assert_eq!((&x).into_angle(&y), None);
+
+            let x = x as f32;
+            let y = y as f32;
+            assert_eq!(x.into_angle(y), None);
+            assert_eq!(x.into_angle(&y), None);
+            assert_eq!((&x).into_angle(y), None);
+            assert_eq!((&x).into_angle(&y), None);
+        }
     }
 
     #[test]
     fn test_into_angle() {
-        into_angle_test(based_expr!(0), based_expr!(0), angle!(0, 0));
-        into_angle_test(based_expr!(0 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2), angle!(0, 0 + 0 sqrt 2)); // basis check
-        into_angle_test(based_expr!(1/16), based_expr!(0), angle!(0, 0));
-        into_angle_test(based_expr!(50), based_expr!(0), angle!(0, 0));
+        into_angle_test(based_expr!(0), based_expr!(0), None);
+        into_angle_test(based_expr!(1 + 0 sqrt 2), based_expr!(0 + 0 sqrt 2), Some(angle!(0, 0 + 0 sqrt 2))); // basis check
+        into_angle_test(based_expr!(1/16), based_expr!(0), Some(angle!(0, 0)));
+        into_angle_test(based_expr!(50), based_expr!(0), Some(angle!(0, 0)));
 
         // Edge cases
-        into_angle_test(based_expr!(-1), based_expr!( 0), angle!(-1, 0));
-        into_angle_test(based_expr!(-1), based_expr!(-1), angle!(-1, 1));
-        into_angle_test(based_expr!( 0), based_expr!(-1), angle!(0, -inf));
-        into_angle_test(based_expr!( 1), based_expr!(-1), angle!(0, -1));
-        into_angle_test(based_expr!( 1), based_expr!( 0), angle!(0, 0));
-        into_angle_test(based_expr!( 1), based_expr!( 1), angle!(0, 1));
-        into_angle_test(based_expr!( 0), based_expr!( 1), angle!(1, -inf));
-        into_angle_test(based_expr!(-1), based_expr!( 1), angle!(1, -1));
+        into_angle_test(based_expr!(-1), based_expr!( 0), Some(angle!(-1, 0)));
+        into_angle_test(based_expr!(-1), based_expr!(-1), Some(angle!(-1, 1)));
+        into_angle_test(based_expr!( 0), based_expr!(-1), Some(angle!(0, -inf)));
+        into_angle_test(based_expr!( 1), based_expr!(-1), Some(angle!(0, -1)));
+        into_angle_test(based_expr!( 1), based_expr!( 0), Some(angle!(0, 0)));
+        into_angle_test(based_expr!( 1), based_expr!( 1), Some(angle!(0, 1)));
+        into_angle_test(based_expr!( 0), based_expr!( 1), Some(angle!(1, -inf)));
+        into_angle_test(based_expr!(-1), based_expr!( 1), Some(angle!(1, -1)));
 
         // Other cases (each slice)
-        into_angle_test(based_expr!(-5), based_expr!(-1), angle!(-1, 1/5));
-        into_angle_test(based_expr!(-4), based_expr!(-6), angle!(-1, 3/2));
-        into_angle_test(based_expr!( 1), based_expr!(-5), angle!(0, -5));
-        into_angle_test(based_expr!( 6), based_expr!(-4), angle!(0, -2/3));
-        into_angle_test(based_expr!( 5), based_expr!( 1), angle!(0, 1/5));
-        into_angle_test(based_expr!( 4), based_expr!( 6), angle!(0, 3/2));
-        into_angle_test(based_expr!(-1), based_expr!( 5), angle!(1, -5));
-        into_angle_test(based_expr!(-6), based_expr!( 4), angle!(1, -2/3));
+        into_angle_test(based_expr!(-5), based_expr!(-1), Some(angle!(-1, 1/5)));
+        into_angle_test(based_expr!(-4), based_expr!(-6), Some(angle!(-1, 3/2)));
+        into_angle_test(based_expr!( 1), based_expr!(-5), Some(angle!(0, -5)));
+        into_angle_test(based_expr!( 6), based_expr!(-4), Some(angle!(0, -2/3)));
+        into_angle_test(based_expr!( 5), based_expr!( 1), Some(angle!(0, 1/5)));
+        into_angle_test(based_expr!( 4), based_expr!( 6), Some(angle!(0, 3/2)));
+        into_angle_test(based_expr!(-1), based_expr!( 5), Some(angle!(1, -5)));
+        into_angle_test(based_expr!(-6), based_expr!( 4), Some(angle!(1, -2/3)));
     }
 
     #[test]

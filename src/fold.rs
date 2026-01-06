@@ -611,8 +611,8 @@ impl VertexDatas {
     pub fn len(&self) -> usize {
         let counts = vec![
             self.num_vertices,
-            self.coords_f64  .as_ref().map(|v| v.len()),
-            self.coords_exact.as_ref().map(|v| v.len()),
+            self.coords_f64  .as_ref().map(|v| v.ncols()),
+            self.coords_exact.as_ref().map(|v| v.ncols()),
             self.half_edges  .as_ref().map(|v| v.len()),
         ].into_iter().flatten().chain(
             self.custom.iter().map(|(_, v)| v.len())
@@ -1121,6 +1121,11 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Creates a new frame with all default values (so all optional fields are [`None`])
+    pub fn new() -> Frame {
+        Frame { ..Default::default() }
+    }
+
     /// Adds an attribute without checking that the frame stays valid.
     /// Returns `true` if the attribute was not already there.
     pub(crate) fn add_attribute_unchecked(&mut self, attr: FrameAttribute) -> bool {

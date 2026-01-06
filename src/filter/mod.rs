@@ -6,11 +6,12 @@ use nalgebra::{DMatrix, DVector, Dim, Dyn, Scalar, VectorView};
 use num_traits::RefNum;
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{EdgeDatas, FaceDatas, FaceField, VertexDatas, filter::{intersect::IntersectCoordinate, split_merge::MergeCoordinate}, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::{self, FloatOrd, IntoOrd, IntoOrdAngle, IntoOrdAngleOp, NumEx, RefIntoOrdAngleOp}};
+use crate::{EdgeDatas, FaceDatas, FaceField, VertexDatas, filter::{intersect::{IntersectAllSegmentsError, IntersectCoordinate}, split_merge::MergeCoordinate}, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::{self, AngleOps, FloatOrd, IntoOrd, IntoOrdAngle, IntoOrdAngleOp, NumEx, RefIntoOrdAngleOp}};
 
 pub mod intersect;
 pub mod split_merge;
 pub mod permutation;
+mod tests;
 
 #[derive(Clone, Copy)]
 struct SwapRemove;
@@ -80,7 +81,25 @@ macro_rules! vertices_coords_mut {
     };
 }
 
-pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate + IntoOrd + IntoOrdAngleOp {
+/// Converts specific types into generic types because specialization isn't a thing
+pub trait AssertType: Sized {
+    /// Returns the value as-is if `Self` is `f64` and panics otherwise.
+    fn assert_f64_from(val: f64) -> Self { panic!("type Self is not f64") }
+    /// Returns the value as-is if `Self` is `f64` and panics otherwise.
+    fn assert_f64_into(self) -> f64 { panic!("type Self is not f64") }
+    /// Returns the value as-is if `Self` is `f64` and panics otherwise.
+    fn assert_f64_to(&self) -> f64 { panic!("type Self is not f64") }
+}
+
+impl AssertType for f64 {
+    fn assert_f64_from(val: f64) -> Self { val }
+    fn assert_f64_into(self) -> f64 { self }
+    fn assert_f64_to(&self) -> f64 { *self }
+}
+
+impl AssertType for BasedExpr {}
+
+pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate + AssertType + IntoOrd + IntoOrdAngleOp + AngleOps {
     const EXACT: bool;
 
     /// Get the vertex coordinates, borrowing only the candidates instead of the entire frame
@@ -319,7 +338,7 @@ impl Frame {
         self.vertices_coords_exact.as_mut().map(|vec| {
             insert_columns(vec, vertex_datas.coords_exact.take().unwrap());
         });
-        self.vertices_half_edges.as_mut().map(|vec| vec.push(vec![]));
+        self.vertices_half_edges.as_mut().map(|vec| vec.extend(vec![vec![]; len]));
 
         self.vertices_custom.iter_mut().for_each(|(k, vec)| vec.extend(vertex_datas.custom.swap_remove(k).unwrap()));
 
@@ -842,6 +861,12 @@ impl Frame {
             .map(|(field, value)| (field.clone(), strategy.remove(value, face)))
             .collect::<IndexMap<_, _>>();
         self.remap_faces_refs(new_indices);
+
+        // This operation breaks manifold representation when a face is removed from a vertex with a loop of faces around it, so fix that
+        let ev = self.edges_vertices.as_ref().unwrap();
+        let vh = self.vertices_half_edges.as_ref().unwrap();
+        let half_edges_to_fix = half_edges.iter().map(|&h| ev.at(h)[0]).flat_map(|v| &vh[v]).copied().collect::<Vec<_>>();
+        self.fix_manifold_attributes_on_half_edges(half_edges_to_fix);
         
         FaceData { half_edges, custom }
     }
@@ -870,6 +895,20 @@ impl Frame {
         }
     }
 
+    /// Computes the approximate coordinates [`Frame::vertices_coords_f64`]
+    /// from the exact coordinates [`Frame::vertices_coords_exact`]
+    fn calc_approx_coordinates(&mut self) {
+        let result = self.vertices_coords_exact.as_ref().unwrap()
+            .map(|c| c.round_to_nearest_f64());
+        self.vertices_coords_f64 = Some(result);
+    }
+
+    fn check_and_flush_coordinates(mut self, intersection: bool) -> Result<Self, Vec<PlanarWithFacesError>> {
+        let coords = self.vertices_coords_f64.take().unwrap();
+        self.vertices_coords_f64 = Some(check_and_flush_coordinates(coords, intersection)?);
+        Ok(self)
+    }
+
     /// Attempts to split intersections and create faces, making a planar graph.
     /// The very outside face is not made.
     /// 
@@ -877,27 +916,42 @@ impl Frame {
     /// and only [`Frame::faces_half_edges`] will exist.
     /// 
     /// Requires edge data and a `vertices_coords` to exist. Coordinates must be 2D.
-    pub fn try_into_planar_with_faces<T: NumEx + Coordinate>(mut self, epsilon: &T) -> Result<Self, PlanarWithFacesError<T>> where
+    pub fn try_into_planar_with_faces<T: NumEx + Coordinate>(mut self, epsilon: &T) -> Result<Self, Vec<PlanarWithFacesError>> where
         for<'a> &'a T: RefCoordinate<T>
     {
         self.init_face_data([FaceField::HalfEdges]);
         // First, intersect all the edges. This, importantly, also guarantees that no two vertices
         // have the exact same position.
-        // TODO: Check that coordinates aren't too big, and flush coordinates that are too close to 0.
-        self.intersect_all_edges(epsilon);
+        // Check that coordinates aren't too big, and flush coordinates that are too close to 0.
+        if T::EXACT {
+            self.intersect_all_edges(epsilon);
+        } else {
+            self = self.check_and_flush_coordinates(false)?;
+            let intersect_epsilon = epsilon.assert_f64_to() - intersect::INTERSECT_ALL_SEGMENTS_LOWER / 2.0;
+            if intersect_epsilon < 0.0 {
+                return Err(vec![PlanarWithFacesError::EpsilonTooSmall { epsilon: intersect_epsilon }])
+            }
+            self.intersect_all_edges(&T::assert_f64_from(intersect_epsilon));
+        }
+
         if !T::EXACT {
             // Because intersection points are not generated exactly, run the intersection algorithm
             // again to confirm that all intersections have indeed been split.
-            // TODO: This probably only needs to happen if epsilon is below a certain bound.
+            // (or rather, that the newly-created intersection points don't cause new intersections)
+
+            // Here, do not modify *self*, as intersection coordinates should be allowed to have more precision than
+            // the lower bound for the line intersection algorithm.
+            let coords = self.vertices_coords_f64.as_ref().unwrap().clone();
+            let coords = check_and_flush_coordinates(coords, true)?;
+            let coords = coords.map(|c| T::assert_f64_from(c));
             let ev = self.edges_vertices.as_ref().unwrap();
-            let coords = vertices_coords!(<T> self).as_ref().unwrap();
             let splits = intersect::intersect_all_segments_ref(
                 (0..self.edges_vertices.as_ref().unwrap().len()).map(Edge),
                 |&e| ev[e].map(|v| coords.fixed_view::<2, 1>(0, v.0)),
                 intersect::NoReportSplitters
             );
             if !splits.is_empty() { 
-                return Err(PlanarWithFacesError::TooDegenerate { epsilon: epsilon.clone() })
+                return Err(vec![PlanarWithFacesError::TooDegenerate { epsilon: epsilon.clone().assert_f64_into() }])
             }
         }
         self.sort_vertices_half_edges::<T>(); // this is unambiguous now
@@ -931,7 +985,7 @@ impl Frame {
                 ec.at_mut(h).push(FaceCorner(index, i));
             }
             fh.push(half_edges);
-            if geom::polygon_orientation_ref(&vertices, |v| coords.fixed_view::<2, 1>(0, v.0)) < 0 {
+            if geom::polygon_orientation_ref(&vertices, |v| coords.fixed_view::<2, 1>(0, v.0)) <= 0 {
                 outer_face = Some(index);
             }
         }
@@ -940,18 +994,50 @@ impl Frame {
         self.add_attribute_unchecked(FrameAttribute::Manifold);
         self.add_attribute_unchecked(FrameAttribute::Orientable);
 
-        let outer_face = outer_face.expect("expected outer face in planar graph");
-        self.swap_remove_face(outer_face);
+        if self.faces_half_edges.as_mut().unwrap().len() > 0 {
+            let outer_face = outer_face.expect("expected outer face in planar graph");
+            self.swap_remove_face(outer_face);
+        }
         Ok(self)
     }
 }
 
+fn check_and_flush_coordinates(mut coords: DMatrix<f64>, intersection: bool) -> Result<DMatrix<f64>, Vec<PlanarWithFacesError>> {
+    //const LOWER_BOUND = f64::from
+    let mut errors = vec![];
+    for coord in coords.iter_mut() {
+        if *coord < intersect::INTERSECT_ALL_SEGMENTS_LOWER {
+            *coord = geom::with_max_lsb(*coord, intersect::INTERSECT_ALL_SEGMENTS_LOWER_EXP);
+        } else if *coord >= intersect::INTERSECT_ALL_SEGMENTS_UPPER {
+            errors.push(PlanarWithFacesError::CoordinateTooBig { coord: *coord, intersection })
+        }
+    }
+    if errors.is_empty() { Ok(coords) } else { Err(errors) }
+}
+
 /// An error that can result from attempting a conversion to planar representation
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq, Eq, PartialOrd, Ord))] // Really no point in this derivation outside of tests
-pub enum PlanarWithFacesError<T> {
-    TooDegenerate { epsilon: T },
+#[cfg_attr(test, derive(PartialEq, PartialOrd))] // Really no point in this derivation outside of tests
+pub enum PlanarWithFacesError {
+    /// A coordinate is too big and would thus overflow in a predicate computation.
+    CoordinateTooBig { coord: f64, intersection: bool },
+    /// Epsilon is too small for use with [`Frame::try_into_planar_with_faces`].
+    /// Note that an epsilon of 0 is not supported due to the fact that intersection coordinates
+    /// can't be computed exactly in general.
+    EpsilonTooSmall { epsilon: f64 },
+    TooDegenerate { epsilon: f64 },
 }
+
+//impl PlanarWithFacesError<f64> {
+//    fn assert_f64<T: AssertType>(self) -> PlanarWithFacesError<T> {
+//        match self {
+//            Self::CoordinateTooBig { edge, coord, intersection } => 
+//                PlanarWithFacesError::CoordinateTooBig { edge, coord: T::assert_f64(coord), intersection },
+//            Self::CoordinateTooSmall { edge, coord, epsilon, intersection } =>
+//                PlanarWithFacesError::CoordinateTooSmall { edge, coord: T::assert_f64(coord), T::assert_f64(epsilon), intersection }
+//        }
+//    }
+//}
 
 /// Given two edges defined by their vertices, gets a vertex incident to both of them, if one exists.
 pub fn edges_vertices_incident(e1: [Vertex; 2], e2: [Vertex; 2]) -> Option<Vertex> {
@@ -1919,6 +2005,27 @@ mod test {
         assert_eq!(frame.faces_custom, indexmap! {
             "test:test".to_owned() => ti_vec![json!(1), json!(2)]
         });
+    }
+
+    #[test]
+    fn test_swap_remove_face_prev_fail() {
+        // A doubly-covered square; removing the clockwise face
+        let wrap_fold = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(0), H(7)],
+            vec![H(1), H(2)],
+            vec![H(6), H(5)],
+            vec![H(4), H(3)],
+        ]), Some(ti_vec![
+            vec![H(0), H(2), H(4), H(6)],
+            vec![H(7), H(5), H(3), H(1)],
+        ]));
+
+        let mut frame = wrap_fold.clone();
+        frame.swap_remove_face(F(0));
+        frame.assert_topology_consistent();
     }
 
     #[test]
