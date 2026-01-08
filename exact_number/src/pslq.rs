@@ -1,12 +1,14 @@
 // Implementation of PSLQ from https://www.davidhbailey.com/dhbtalks/dhb-carma-20100824.pdf,
 
-use dashu_float::{DBig};
-use dashu_float::ops::SquareRoot;
-use dashu_int::{IBig, Sign, UBig};
+//use dashu_float::{DBig};
+//use dashu_float::ops::SquareRoot;
+//use dashu_int::{IBig, Sign, UBig};
 use malachite::base::num::basic::traits::{NegativeOne, One, Zero};
 use malachite::base::num::arithmetic::traits::{Abs as _, FloorLogBase2, FloorSqrt, Pow, PowerOf2, Square, CheckedDiv};
+use malachite::base::num::conversion::traits::ToSci;
 use malachite::Natural;
 use malachite::Integer;
+use malachite::base::num::conversion::string::to_sci::SciWrapper;
 use nalgebra::allocator::Allocator;
 use nalgebra::{DMatrix, DVector, DefaultAllocator, Dim, Matrix, Storage, VecStorage};
 
@@ -25,36 +27,17 @@ pub enum IntegerRelationError {
     WasWrongGaveUp,
 }
 
-type FBig = dashu_float::FBig<dashu_float::round::mode::Zero, 2>;
+//type FBig = dashu_float::FBig<dashu_float::round::mode::Zero, 2>;
 
-fn dec<R: Dim, C: Dim>(mtx: &Matrix<Integer, R, C, VecStorage<Integer, R, C>>, precision: usize) -> Matrix<DBig, R, C, VecStorage<DBig, R, C>> where
-    DefaultAllocator: Allocator<R, C, Buffer<DBig> = VecStorage<DBig, R, C>>,
+fn dec<R: Dim, C: Dim>(mtx: &Matrix<Integer, R, C, VecStorage<Integer, R, C>>, precision: usize) -> Matrix<String, R, C, VecStorage<String, R, C>> where
+    DefaultAllocator: Allocator<R, C, Buffer<String> = VecStorage<String, R, C>>,
     VecStorage<Integer, R, C>: Storage<Integer, R, C>,
 {
-    mtx.map(|x| fixed_to_dbig(&x, precision))
+    mtx.map(|x| fixed_to_rat(&x, precision).to_sci().to_string())
 }
 
-fn to_fixed(fbig: &FBig, precision: usize) -> Integer {
-    let repr = fbig.repr();
-    let (sign, significand) = repr.significand().as_sign_words();
-    let significand = Integer::from_sign_and_abs(sign == Sign::Positive, Natural::from_limbs_asc(significand));
-    let shift = precision as isize + repr.exponent();
-    if shift < 0 {
-        significand >> -shift
-    } else {
-        significand << shift
-    }
-}
-
-fn fixed_to_dbig(x: &Integer, precision: usize) -> DBig {
-    let significand = x.unsigned_abs_ref();
-    let significand_size = if significand == &Natural::ZERO { 4 } else { significand.floor_log_base_2() + 4 };
-    let ubig = UBig::from_words(&significand.to_limbs_asc());
-    let ibig  = IBig::from_parts(if x < &Integer::ZERO { Sign::Negative } else { Sign::Positive }, ubig);
-    let float = FBig::from_parts(ibig, -(precision as isize));
-    // Unlimited precision happens if float is 0
-    let float = float.with_precision(significand_size as usize).value();
-    float.to_decimal().value()
+fn fixed_to_rat(x: &Integer, precision: usize) -> Rat {
+    Rat::from_integers(x.clone(), Integer::ONE << precision)
 }
 
 fn sqrt_fixed(x: Integer, precision: usize) -> Integer {
@@ -80,26 +63,24 @@ fn round_fixed_r(x: &Integer, precision: usize) -> Integer {
 /// 
 /// Taken from https://github.com/mpmath/mpmath/blob/33eace1005bc0a6d5330104cd1e8fa5fbab0aee3/mpmath/identification.py#L19
 /// See https://www.davidhbailey.com/dhbtalks/dhb-carma-20100824.pdf
-fn maybe_integer_relation(basis: &[FBig], max_coeff: &Integer, max_steps: usize) -> Result<Vec<Integer>, IntegerRelationError>  {
+fn maybe_integer_relation(basis: &[Integer], precision: usize, max_coeff: &Integer, max_steps: usize) -> Result<Vec<Integer>, IntegerRelationError>  {
     const VERBOSE: bool = false;
     if basis.len() == 0 { return Ok(vec![]); }
     if basis.len() == 1 {
-        return if basis[0] == FBig::ZERO { Ok(vec![Integer::ONE]) } else { Err(IntegerRelationError::SizeOneBasis) };
+        return if basis[0] == Integer::ZERO { Ok(vec![Integer::ONE]) } else { Err(IntegerRelationError::SizeOneBasis) };
     }
 
-    let precision = basis.iter().map(|b| b.precision()).max().unwrap();
     // At too low precision, the algorithm becomes meaningless
     if precision < 53 { return Err(IntegerRelationError::OutOfPrecision); }
     // Also, precision should probably be at least 5 * max(2, basis.len()).
 
     let target = precision * 3 / 4;
-    let tolerance = FBig::from_parts(IBig::ONE, -(target as isize));
     let extra = 60;
     let precision = precision + extra;
-    let tolerance = to_fixed(&tolerance, precision);
+    let tolerance = Integer::ONE << (precision - target);
 
     if VERBOSE {
-        println!("PSLQ using prec {} and tol {}", precision, fixed_to_dbig(&tolerance, precision));
+        println!("PSLQ using prec {} and tol {}", precision, fixed_to_rat(&tolerance, precision));
     }
 
     // Convert to fixed-point numbers. The dummy None is added so we can
@@ -107,8 +88,11 @@ fn maybe_integer_relation(basis: &[FBig], max_coeff: &Integer, max_steps: usize)
     // Bailey's indexing. The algorithm is 100 lines long, so debugging
     // a single wrong index can be painful.)
     let x = DVector::from_iterator(basis.len() + 1, std::iter::once(Integer::ZERO).chain(
-        basis.iter().map(|xk| to_fixed(xk, precision))
+        basis.iter().map(|xk| xk << extra)
     ));
+    if VERBOSE {
+        println!("Basis: {}", dec(&x, precision));
+    }
 
     // Sanity check the magnitudes
     let (min_x_i, min_x) = x.iter().skip(1).enumerate().min_by_key(|(_, xx)| xx.abs()).unwrap();
@@ -239,13 +223,13 @@ fn maybe_integer_relation(basis: &[FBig], max_coeff: &Integer, max_steps: usize)
         } else {
             if VERBOSE {
                 println!("{}/{}:  Error: {} Norm: infinity",
-                    rep, max_steps, fixed_to_dbig(&best_error, precision));
+                    rep, max_steps, fixed_to_rat(&best_error, precision));
             }
             return Err(IntegerRelationError::ErrorNormTooBig);
         };
         if VERBOSE {
             println!("{}/{}:  Error: {}   Norm: {}",
-                rep, max_steps, fixed_to_dbig(&best_error, precision), norm);
+                rep, max_steps, fixed_to_rat(&best_error, precision), norm);
         }
         if &norm >= max_coeff {
             return Err(IntegerRelationError::ErrorNormTooBig);
@@ -460,9 +444,9 @@ fn maybe_integer_relation(basis: &[FBig], max_coeff: &Integer, max_steps: usize)
 
 pub(crate) fn checked_integer_relation(basis: &[SqrtExpr]) -> Result<Vec<Integer>, IntegerRelationError> {
     let precision = 75;// + basis.len().saturating_sub(5) * 20; // A guess
-    let fbig_basis = basis.iter().map(|b| b.to_fbig(precision)).collect::<Vec<_>>();
+    let fbig_basis = basis.iter().map(|b| b.to_fixed(precision)).collect::<Vec<_>>();
 
-    let coeffs = maybe_integer_relation(&fbig_basis, &1000.into(), 100)?;
+    let coeffs = maybe_integer_relation(&fbig_basis, precision, &1000.into(), 100)?;
     if !check_combination(&coeffs, basis) {
         Err(IntegerRelationError::WasWrongGaveUp)?;
     }
@@ -473,11 +457,11 @@ pub(crate) fn checked_integer_relation(basis: &[SqrtExpr]) -> Result<Vec<Integer
 /// Returns `factor_a` * `factor_b` as a rational linear combination of `basis`
 pub(crate) fn checked_integer_relation_product(basis: &[SqrtExpr], factor_a: &SqrtExpr, factor_b: &SqrtExpr) -> Result<Vec<Rat>, IntegerRelationError> {
     let precision = 75;// + basis.len().saturating_sub(4) * 20;
-    let mut fbig_basis = basis.iter().map(|b| b.to_fbig(precision)).collect::<Vec<_>>();
-    fbig_basis.push(factor_a.to_fbig(precision) * factor_b.to_fbig(precision));
+    let mut fixed_basis = basis.iter().map(|b| b.to_fixed(precision)).collect::<Vec<_>>();
+    fixed_basis.push(factor_a.to_fixed(precision) * factor_b.to_fixed(precision) >> precision);
     //println!("fbig_basis: [{}]", fbig_basis.iter().map(|f| format!("{}, ", f.to_decimal().value())).collect::<String>());
 
-    let mut coeffs = maybe_integer_relation(&fbig_basis, &1000.into(), 100)?;
+    let mut coeffs = maybe_integer_relation(&fixed_basis, precision, &1000.into(), 100)?;
     if !check_combination_product(&coeffs, basis, factor_a, factor_b) {
         Err(IntegerRelationError::WasWrongGaveUp)?;
     }
@@ -487,21 +471,19 @@ pub(crate) fn checked_integer_relation_product(basis: &[SqrtExpr], factor_a: &Sq
     Ok(coeffs)
 }
 
-fn integer_to_fbig(int: &Integer, precision: usize) -> FBig {
-    let words = int.unsigned_abs_ref().to_limbs_asc();
-    let ibig = IBig::from_parts(if int < &Integer::ZERO {Sign::Negative} else {Sign::Positive}, UBig::from_words(&words));
-    FBig::from(ibig).with_precision(precision).value()
+fn integer_to_fixed(int: &Integer, precision: usize) -> Integer {
+    int << precision
 }
 
-fn terms_to_fbig(terms: &SqrtExprSum, precision: usize) -> FBig {
-    terms.iter().map(|(coeff, sqrt)| integer_to_fbig(coeff, precision) * sqrt.to_fbig(precision)).sum::<FBig>()
+fn terms_to_fixed(terms: &SqrtExprSum, precision: usize) -> Integer {
+    terms.iter().map(|(coeff, sqrt)| coeff * sqrt.to_fixed(precision)).sum::<Integer>()
 }
 
 impl SqrtExpr {
-    fn to_fbig(&self, precision: usize) -> FBig {
+    fn to_fixed(&self, precision: usize) -> Integer {
         match self {
-            Self::Int(i) => integer_to_fbig(i, precision).sqrt(),
-            Self::Sum(terms) => terms_to_fbig(terms, precision).sqrt()
+            Self::Int(i) => sqrt_fixed(integer_to_fixed(i, precision), precision),
+            Self::Sum(terms) => sqrt_fixed(terms_to_fixed(terms, precision), precision)
         }
     }
 }
@@ -510,17 +492,20 @@ impl SqrtExpr {
 mod test {
     use std::ops::BitAndAssign;
 
-    use dashu_float::{round::Rounding, FBig};
-    use dashu_float::round::mode;
+    //use dashu_float::{round::Rounding, FBig};
+    //use dashu_float::round::mode;
     use malachite::Integer;
+    use malachite::base::num::basic::traits::One;
+    use malachite::base::num::conversion::string::options::ToSciOptions;
+    use malachite::base::num::conversion::traits::ToSci;
 
-    use crate::pslq::{checked_integer_relation_product, maybe_integer_relation};
+    use crate::pslq::{checked_integer_relation_product, fixed_to_rat, maybe_integer_relation, sqrt_fixed};
     use crate::{sqrt_expr, SqrtExpr};
     use crate::rat::Rat;
 
     fn assert_integer_relation(input: Vec<SqrtExpr>, expected: Option<Vec<i64>>) {
-        let basis = input.iter().map(|b| b.to_fbig(53)).collect::<Vec<_>>();
-        assert_integer_relation_fbig(basis, expected)
+        let basis = input.iter().map(|b| b.to_fixed(53)).collect::<Vec<_>>();
+        assert_integer_relation_fixed(basis, 53, expected, &1000.into(), 100)
     }
 
     fn assert_integer_relation_product(input: Vec<SqrtExpr>, a: SqrtExpr, b: SqrtExpr, expected: Option<Vec<[i64; 2]>>) {
@@ -529,18 +514,18 @@ mod test {
         let result = checked_integer_relation_product(&input, &a, &b);
         match expected {
             None => assert_eq!(result.ok(), None),
-            Some(mut expected) => assert_eq!(result, Ok(expected))
+            Some(expected) => assert_eq!(result, Ok(expected))
         }
     }
 
-    fn assert_integer_relation_fbig(basis: Vec<FBig>, expected: Option<Vec<i64>>) {
+    fn assert_integer_relation_fixed(basis: Vec<Integer>, precision: usize, expected: Option<Vec<i64>>, max_coeff: &Integer, max_steps: usize) {
         let expected = expected.map(|v| v.into_iter().map(|i| Integer::from(i)).collect::<Vec<_>>());
-        let mut result = maybe_integer_relation(&basis, &1000.into(), 100);
+        let result = maybe_integer_relation(&basis, precision, &max_coeff, max_steps);
 
         match expected {
             None => assert_eq!(result.ok(), None),
 
-            Some(mut expected) => {
+            Some(expected) => {
                 let mut result = result.unwrap();
                 if result.last().unwrap() > &Integer::from(0u64) {
                     result.iter_mut().for_each(|r| *r = -&*r );
@@ -553,26 +538,30 @@ mod test {
     #[test]
     fn test_sqrt_to_fbig_int_perfect_square() {
         let input = sqrt_expr!(4);
-        let result = input.to_fbig(256);
-        let expected = FBig::<mode::Zero, 2>::from(2);
+        let result = input.to_fixed(256);
+        let expected = Integer::from(2) << 256;
         assert_eq!(result, expected)
     }
 
     #[test]
-    fn test_sqrt_to_fbig_int_not_perfect_square() {
+    fn test_sqrt_to_fixed_int_not_perfect_square() {
         let input = sqrt_expr!(2);
-        let result = input.to_fbig(256);
+        let result = input.to_fixed(256);
         let expected_start = "1.414213562373095048801688724209698078569671875376948073176679737990732";
-        let start = &result.to_decimal().value().to_string()[0..expected_start.len()];
+        let mut options = ToSciOptions::default();
+        options.set_size_complete();
+        let start = &fixed_to_rat(&result, 256).to_sci_with_options(options).to_string()[0..expected_start.len()];
         assert_eq!(start, expected_start);
     }
 
     #[test]
-    fn test_sqrt_to_fbig_complicated() {
+    fn test_sqrt_to_fixed_complicated() {
         let input = sqrt_expr!(10 - 2 sqrt 5);
-        let result = input.to_fbig(256);
+        let result = input.to_fixed(256);
         let expected_start = "2.35114100916989251667482381855629107439060975057258396428908992302911";
-        let start = &result.to_decimal().value().to_string()[0..expected_start.len()];
+        let mut options = ToSciOptions::default();
+        options.set_size_complete();
+        let start = &fixed_to_rat(&result, 256).to_sci_with_options(options).to_string()[0..expected_start.len()];
         assert_eq!(start, expected_start);
     }
 
@@ -661,20 +650,22 @@ mod test {
     #[ignore]
     fn test_relation_frrt_3_minus_frrt_2() {
         // A classic.
-        let fourth = FBig::<mode::Zero, 2>::from_parts(1.into(), -2);
         let precision = 350;
-        let a = FBig::from(3).with_precision(precision).unwrap().powf(&fourth)
-            + FBig::from(2).with_precision(precision).unwrap().powf(&fourth);
-        let mut curr = FBig::from(1).with_precision(precision).unwrap();
+        let a = sqrt_fixed(sqrt_fixed(Integer::from(3) << precision, precision), precision)
+            - sqrt_fixed(sqrt_fixed(Integer::from(2) << precision, precision), precision);
+        let mut curr = Integer::ONE << precision;
         let powers = std::iter::from_fn(|| {
             let result = curr.clone();
-            curr *= &a;
+            curr = (&curr * &a) >> precision;
             Some(result)
         }).take(17).collect::<Vec<_>>();
 
-        assert_integer_relation_fbig(
+        assert_integer_relation_fixed(
             powers,
+            precision,
             Some(vec![-1, 0, 0, 0, 3860, 0, 0, 0, 666, 0, 0, 0, 20, 0, 0, 0, -1]),
+            &4000.into(),
+            10000
         );
     }
 

@@ -418,7 +418,7 @@ impl BasedExpr {
     /// Checks whether this number is an integer (all coefficients are 0 except the first one, which is an integer)
     pub fn is_integer(&self) -> bool {
         match self {
-            Self::Baseless(_) => true,
+            Self::Baseless(q) => q.is_integer(),
             Self::Based(coeffs, basis) => (coeffs, basis).is_integer()
         }
     }

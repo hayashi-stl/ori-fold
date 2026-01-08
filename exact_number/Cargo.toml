@@ -7,8 +7,6 @@ edition = "2024"
 # "0.3.0" has a fatal bug that makes it think √(2+√2) - √(2-√2) = 0
 algebraics = { git = "https://salsa.debian.org/Kazan-team/algebraics" }
 approx = "0.5.1"
-dashu-float = "0.4.3"
-dashu-int = "0.4.1"
 malachite = "0.6.1"
 nalgebra = "0.34.1"
 num = "0.4.3"
