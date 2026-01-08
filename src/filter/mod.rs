@@ -2,7 +2,7 @@ use std::{iter, mem};
 
 use exact_number::{BasedExpr};
 use indexmap::{indexmap, map::Entry, IndexMap};
-use nalgebra::{DMatrix, DVector, Dim, Dyn, Scalar, VectorView};
+use nalgebra::{DMatrix, DVector, Dim, Dyn, RealField, Scalar, VectorView};
 use num_traits::RefNum;
 use typed_index_collections::{ti_vec, TiVec};
 
@@ -99,7 +99,7 @@ impl AssertType for f64 {
 
 impl AssertType for BasedExpr {}
 
-pub trait Coordinate: Sized + IntersectCoordinate + MergeCoordinate + AssertType + IntoOrd + IntoOrdAngleOp + AngleOps {
+pub trait Coordinate: Sized + RealField + NumEx + IntersectCoordinate + MergeCoordinate + AssertType + IntoOrd + IntoOrdAngleOp + AngleOps {
     const EXACT: bool;
 
     /// Get the vertex coordinates, borrowing only the candidates instead of the entire frame

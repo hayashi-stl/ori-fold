@@ -15,3 +15,4 @@ pub mod convert;
 mod test_utils;
 
 pub use fold::*;
+pub use filter::Coordinate;
