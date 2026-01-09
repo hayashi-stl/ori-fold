@@ -9,6 +9,8 @@ use serde_json::{Value};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use typed_index_collections::{TiSlice, TiVec};
 
+use crate::Coordinate;
+
 /// A subjective interpretation about what the entire file represents.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[derive(Serialize, Deserialize)]
@@ -605,6 +607,13 @@ pub struct VertexData {
     pub custom: IndexMap<String, Value>,
 }
 
+impl VertexData {
+    /// Adds `coords` to the correct coordinate field depending on whether they're exact or approximate
+    pub fn with_coords<T: Coordinate>(self, coords: DVector<T>) -> Self {
+        T::data_with_vertices_coords(self, coords)
+    }
+}
+
 /// Vertex data for multiple vertices. All data is documented in [`Frame`](crate::Frame)
 #[derive(Clone, Debug, PartialEq)]
 pub struct VertexDatas {
@@ -632,6 +641,11 @@ impl VertexDatas {
         );
         counts.reduce(|curr, acc| if curr == acc { curr } else { panic!("disagreement over number of vertices in VertexDatas") })
             .expect("if no fields are defined, at least specify `num_vertices`")
+    }
+
+    /// Adds `coords` to the correct coordinate field depending on whether they're exact or approximate
+    pub fn with_coords<T: Coordinate>(self, coords: DMatrix<T>) -> Self {
+        T::datas_with_vertices_coords(self, coords)
     }
 }
 

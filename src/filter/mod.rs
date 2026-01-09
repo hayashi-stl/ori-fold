@@ -106,6 +106,10 @@ pub trait Coordinate: Sized + NumEx + IntersectCoordinate + MergeCoordinate + As
     fn vertices_coords<'a>(coords_f64: &'a Option<DMatrix<f64>>, coords_exact: &'a Option<DMatrix<BasedExpr>>) -> &'a Option<DMatrix<Self>>;
     /// Get the vertex coordinates mutably, borrowing only the candidates instead of the entire frame
     fn vertices_coords_mut<'a>(coords_f64: &'a mut Option<DMatrix<f64>>, coords_exact: &'a mut Option<DMatrix<BasedExpr>>) -> &'a mut Option<DMatrix<Self>>;
+    /// Adds coordinates to the appropriate field in the data
+    fn data_with_vertices_coords(data: VertexData, coords: DVector<Self>) -> VertexData;
+    /// Adds coordinates to the appropriate field in the datas
+    fn datas_with_vertices_coords(datas: VertexDatas, coords: DMatrix<Self>) -> VertexDatas;
 }
 
 impl Coordinate for f64 {
@@ -117,6 +121,14 @@ impl Coordinate for f64 {
     fn vertices_coords_mut<'a>(coords_f64: &'a mut Option<DMatrix<f64>>, _: &'a mut Option<DMatrix<BasedExpr>>) -> &'a mut Option<DMatrix<Self>> {
         coords_f64
     }
+    fn data_with_vertices_coords(mut data: VertexData, coords: DVector<Self>) -> VertexData {
+        data.coords_f64 = Some(coords);
+        data
+    }
+    fn datas_with_vertices_coords(mut datas: VertexDatas, coords: DMatrix<Self>) -> VertexDatas {
+        datas.coords_f64 = Some(coords);
+        datas
+    }
 }
 
 impl Coordinate for BasedExpr {
@@ -127,6 +139,14 @@ impl Coordinate for BasedExpr {
     }
     fn vertices_coords_mut<'a>(_: &'a mut Option<DMatrix<f64>>, coords_exact: &'a mut Option<DMatrix<BasedExpr>>) -> &'a mut Option<DMatrix<Self>> {
         coords_exact
+    }
+    fn data_with_vertices_coords(mut data: VertexData, coords: DVector<Self>) -> VertexData {
+        data.coords_exact = Some(coords);
+        data
+    }
+    fn datas_with_vertices_coords(mut datas: VertexDatas, coords: DMatrix<Self>) -> VertexDatas {
+        datas.coords_exact = Some(coords);
+        datas
     }
 }
 
