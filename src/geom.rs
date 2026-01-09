@@ -10,8 +10,8 @@ pub type VectorViewDyn<'s, T, D> = VectorView<'s, T, D, U1, Dyn>;
 pub type VectorView2Dyn<'s, T> = VectorView2<'s, T, U1, Dyn>;
 pub type MatrixView2Dyn<'s, T> = MatrixView2xX<'s, T, U1, Dyn>;
 
-pub trait NumEx: Default + PartialOrd + Num + NumRef + NumAssignRef + Scalar + NumAssign + Signed + Neg<Output = Self> {}
-impl<T> NumEx for T where T: Default + PartialOrd + Num + NumRef + NumAssignRef + Scalar + NumAssign + Signed + Neg<Output = Self> {}
+pub trait NumEx: Default + PartialOrd + Num + NumRef + NumAssignRef + Neg + Scalar + NumAssign + Signed + Neg<Output = Self> {}
+impl<T> NumEx for T where T: Default + PartialOrd + Num + NumRef + NumAssignRef + Neg + Scalar + NumAssign + Signed + Neg<Output = Self> {}
 
 /// A wrapper for floats, that implements total equality and ordering
 /// and hashing.
