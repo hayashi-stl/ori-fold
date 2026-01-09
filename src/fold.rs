@@ -223,6 +223,19 @@ pub enum EdgeAssignment {
     Join,
 }
 
+impl EdgeAssignment {
+    /// Returns the flipped edge assignment.
+    /// This flips [`EdgeAssignment::Mountain`] and [`EdgeAssignment::Valley`]
+    /// and keeps everything else the same.
+    pub fn flipped(self) -> Self {
+        match self {
+            Self::Mountain => Self::Valley,
+            Self::Valley => Self::Mountain,
+            a => a,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[derive(Serialize_repr, Deserialize_repr)]
 #[repr(i8)]
