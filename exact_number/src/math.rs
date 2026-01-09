@@ -1,12 +1,12 @@
 use std::{cmp::Ordering, iter::{Product, Sum}, ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Rem, RemAssign, Sub, SubAssign}};
 
 use approx::{AbsDiffEq, RelativeEq, UlpsEq};
-use malachite::{base::{num::{arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, NegAssign, Pow, Sign}, logic::traits::SignificantBits}, rounding_modes::RoundingMode}};
+use malachite::{Integer, Natural, base::{num::{arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, DivMod, Floor, FloorSqrt, NegAssign, Pow, Sign}, basic::traits::{One as _, Zero as _}, factorization::traits::Primes, logic::traits::SignificantBits}, rounding_modes::RoundingMode}};
 use nalgebra::{ComplexField, DMatrix, DVector, Field, RealField, SimdValue};
 use num::{FromPrimitive, Signed, Zero};
 use simba::scalar::SubsetOf;
 
-use crate::{conversion::{IntoBaseless, TryBaselessFrom}, rat::Rat, BasedExpr};
+use crate::{BasedExpr, basis::{Basis, SqrtExpr}, conversion::{IntoBaseless, TryBaselessFrom}, rat::Rat};
 
 impl AddAssign<BasedExpr> for BasedExpr {
     fn add_assign(&mut self, mut rhs: BasedExpr) {
@@ -1051,9 +1051,14 @@ impl ComplexField for BasedExpr {
         panic!("cannot take ln_1p of field extension {self}")
     }
 
-    /// Currently fake function; do not call.
+    /// If called on [`BasedExpr::Based`], the result is currently unspecified (and can panic).
+    /// On [`BasedExpr::Baseless`], it returns a [`BasedExpr::Based`] with basis [1, sqrt(`k`)],
+    /// where `k` is the smallest integer such that the basis can express sqrt(`self`).
     fn sqrt(self) -> Self {
-        panic!("cannot take sqrt of field extension yet. Some cases will stay undefined.")
+        match self {
+            this@BasedExpr::Baseless(_) => this.try_sqrt().unwrap(),
+            BasedExpr::Based(_, _) => panic!("cannot take sqrt of based field extension yet. Some cases will stay undefined.")
+        }
     }
 
     /// Currently fake function; do not call.
@@ -1093,19 +1098,63 @@ impl ComplexField for BasedExpr {
         true
     }
 
-    /// Currently fake function; always returns `None`
+    /// If called on [`BasedExpr::Based`], the result is currently unspecified (but will not panic).
+    /// On [`BasedExpr::Baseless`], it returns a [`BasedExpr::Based`] with basis [1, sqrt(`k`)],
+    /// where `k` is the smallest integer such that the basis can express sqrt(`self`).
     fn try_sqrt(self) -> Option<Self> {
-        // TODO: Define if ready
-        None
+        match self {
+            BasedExpr::Baseless(q) => {
+                if q < Rat::ZERO {
+                    return None;
+                } else if q == Rat::ZERO {
+                    return Some(BasedExpr::Baseless(q));
+                }
+                let nd = q.numerator_ref() * q.denominator_ref();
+                let (sqrt, squarefree) = to_sqrt_squarefree(nd);
+                let coeff = Rat::from_naturals(sqrt, q.to_denominator());
+                if squarefree == Natural::ONE {
+                    Some(BasedExpr::Baseless(coeff))
+                } else {
+                    Some(BasedExpr::try_from_coeffs_and_basis(vec![Rat::ZERO, coeff],
+                        Basis::new_arc(vec![SqrtExpr::Int(Integer::ONE), SqrtExpr::Int(squarefree.into())])).unwrap())
+                }
+            },
+            // TODO: Define if ready
+            BasedExpr::Based(_, _) => None
+        }
     }
+}
+
+/// Takes a positive natural number and factorizes it into `a*a*b`, where `a` and `b` are integers
+/// and `a` is as big as possible. Then returns `(a, b)`.
+fn to_sqrt_squarefree(mut n: Natural) -> (Natural, Natural) {
+    let floor_sqrt = (&n).floor_sqrt();
+    if &floor_sqrt * &floor_sqrt == n {
+        return (floor_sqrt, Natural::ONE);
+    }
+    let mut sqrt = Natural::ONE;
+    for prime in Natural::primes_less_than_or_equal_to(&floor_sqrt) {
+        let square = &prime * &prime;
+        if square >= n { break } // That's >=, because we already returned on a perfect square
+        let mut div_mod: (Natural, Natural);
+        while {
+            div_mod = (&n).div_mod(&square);
+            div_mod.1 == Natural::ZERO
+        } {
+            sqrt *= &prime;
+            n = div_mod.0;
+        }
+    }
+    (sqrt, n)
 }
 
 #[cfg(test)]
 mod test {
     use std::cmp::Ordering;
 
-    use crate::{based_expr, rat::Rat, BasedExpr};
+    use crate::{BasedExpr, based_expr, conversion::IntoBaseless, math::to_sqrt_squarefree, rat::Rat};
     use malachite::base::num::arithmetic::traits::{Abs, AbsDiff, Ceiling, CheckedDiv, Floor, Pow};
+    use nalgebra::ComplexField;
 
     fn add_test(a: BasedExpr, b: BasedExpr, expected: BasedExpr) {
         assert_eq!(a.clone() + b.clone(), expected);
@@ -1210,7 +1259,7 @@ mod test {
     }
 
     fn floor_test(a: BasedExpr, expected: BasedExpr) {
-        assert_eq!(a.floor(), expected);
+        assert_eq!(Floor::floor(&a), expected);
     }
 
     fn ceiling_test(a: BasedExpr, expected: BasedExpr) {
@@ -1626,5 +1675,32 @@ mod test {
         pow_test(based_expr!(-5), 2, based_expr!(25));
 
         pow_test(based_expr!(1 + sqrt 2), 2, based_expr!(3 + 2 sqrt 2));
+    }
+
+    #[test]
+    fn test_to_sqrt_squarefree() {
+        assert_eq!(to_sqrt_squarefree(1u32.into()), (1u32.into(), 1u32.into()));
+        assert_eq!(to_sqrt_squarefree(4u32.into()), (2u32.into(), 1u32.into()));
+        assert_eq!(to_sqrt_squarefree(100u32.into()), (10u32.into(), 1u32.into()));
+        assert_eq!(to_sqrt_squarefree(729u32.into()), (27u32.into(), 1u32.into()));
+        assert_eq!(to_sqrt_squarefree(2025u32.into()), (45u32.into(), 1u32.into()));
+
+        assert_eq!(to_sqrt_squarefree(2u32.into()), (1u32.into(), 2u32.into()));
+        assert_eq!(to_sqrt_squarefree(210u32.into()), (1u32.into(), 210u32.into()));
+        assert_eq!(to_sqrt_squarefree(18u32.into()), (3u32.into(), 2u32.into()));
+        assert_eq!(to_sqrt_squarefree(2100u32.into()), (10u32.into(), 21u32.into()));
+    }
+
+    #[test]
+    fn test_baseless_expr_sqrt() {
+        assert_eq!(0i32.into_baseless().sqrt(), 0i32.into_baseless());
+        assert_eq!(1i32.into_baseless().sqrt(), 1i32.into_baseless());
+        assert_eq!(2025i32.into_baseless().sqrt(), 45i32.into_baseless());
+        assert_eq!(Rat::from_signeds(16, 9).into_baseless().sqrt(), Rat::from_signeds(4, 3).into_baseless());
+
+        assert_eq!(2i32.into_baseless().sqrt(), based_expr!(0 + 1 sqrt 2));
+        assert_eq!(2100i32.into_baseless().sqrt(), based_expr!(0 + 10 sqrt 21));
+        assert_eq!(Rat::from_signeds(1, 3).into_baseless().sqrt(), based_expr!(0 + 1/3 sqrt 3));
+        assert_eq!(Rat::from_signeds(8, 5).into_baseless().sqrt(), based_expr!(0 + 2/5 sqrt 10));
     }
 }

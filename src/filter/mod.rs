@@ -99,7 +99,7 @@ impl AssertType for f64 {
 
 impl AssertType for BasedExpr {}
 
-pub trait Coordinate: Sized + RealField + NumEx + IntersectCoordinate + MergeCoordinate + AssertType + IntoOrd + IntoOrdAngleOp + AngleOps {
+pub trait Coordinate: Sized + NumEx + IntersectCoordinate + MergeCoordinate + AssertType + IntoOrd + IntoOrdAngleOp + AngleOps {
     const EXACT: bool;
 
     /// Get the vertex coordinates, borrowing only the candidates instead of the entire frame
