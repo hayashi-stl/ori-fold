@@ -311,6 +311,14 @@ impl BasedExpr {
         Self::Based(DVector::from_vec(vec![q]), Basis::new_arc(vec![SqrtExpr::ONE]))
     }
 
+    /// Gives this a rational basis ($[1]$) if it's not already based.
+    pub fn or_rational_basis(self) -> Self {
+        match self {
+            Self::Baseless(q) => Self::with_rational_basis(q),
+            based@Self::Based(_, _) => based
+        }
+    }
+
     fn has_basis(&self) -> bool {
         match self {
             Self::Baseless(_) => false,
