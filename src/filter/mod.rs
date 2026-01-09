@@ -237,6 +237,17 @@ impl Frame {
             }
         }
     }
+    
+    pub fn init_vertex_data_with_hint(&mut self, data: &VertexDatas, default_num_dimensions: usize) {
+        let fields = [
+            data.coords_exact.as_ref().map(|_| VertexField::CoordsExact),
+            data.coords_f64.as_ref().map(|_| VertexField::CoordsF64),
+        ].into_iter().flatten().chain(data.custom.keys().map(|k| VertexField::Custom(k.clone())));
+        let num_dimensions = data.coords_exact.as_ref().map(|c| c.nrows())
+            .or(data.coords_f64.as_ref().map(|c| c.ncols()))
+            .unwrap_or(default_num_dimensions);
+        self.init_vertex_data(fields, num_dimensions);
+    }
 
     /// Clears all edge data. This also clears face data.
     pub fn clear_edge_data(&mut self) {
@@ -274,6 +285,18 @@ impl Frame {
         }
     }
 
+    pub fn init_edge_data_with_hint(&mut self, data: &EdgeDatas) {
+        let fields = [
+            Some(EdgeField::Vertices),
+            data.assignment.as_ref().map(|_| EdgeField::Assignment),
+            data.fold_angle_f64.as_ref().map(|_| EdgeField::FoldAngleF64),
+            data.fold_angle_exact.as_ref().map(|_| EdgeField::FoldAngleExact),
+            data.length_f64.as_ref().map(|_| EdgeField::LengthF64),
+            data.length2_exact.as_ref().map(|_| EdgeField::Length2Exact),
+        ].into_iter().flatten().chain(data.custom.keys().map(|k| EdgeField::Custom(k.clone())));
+        self.init_edge_data(fields);
+    }
+
     /// Clears all face data.
     pub fn clear_face_data(&mut self) {
         self.edges_face_corners = None;
@@ -296,6 +319,13 @@ impl Frame {
                 FaceField::Custom(k) => { self.faces_custom.insert(k, ti_vec![]); }
             };
         }
+    }
+
+    pub fn init_face_data_with_hint(&mut self, data: &FaceDatas) {
+        let fields = [
+            Some(FaceField::HalfEdges),
+        ].into_iter().flatten().chain(data.custom.keys().map(|k| FaceField::Custom(k.clone())));
+        self.init_face_data(fields);
     }
 
     /// Adds a vertex given some vertex data and returns its index.
@@ -343,6 +373,12 @@ impl Frame {
         self.vertices_custom.iter_mut().for_each(|(k, vec)| vec.extend(vertex_datas.custom.swap_remove(k).unwrap()));
 
         index
+    }
+
+    /// Sets the vertex data of this frame. This clears all previous vertex, edge, and face data.
+    pub fn set_vertices(&mut self, mut vertex_datas: VertexDatas, default_num_dimensions: usize) {
+        self.init_vertex_data_with_hint(&vertex_datas, default_num_dimensions);
+        self.add_vertices(vertex_datas);
     }
 
     /// Gets the data for a vertex all in one place
@@ -480,6 +516,12 @@ impl Frame {
             }
         }
         self.add_edges_unchecked(edge_datas)
+    }
+
+    /// Sets the edge data of this frame. This clears all previous edge and face data.
+    pub fn set_edges(&mut self, edge_datas: EdgeDatas) {
+        self.init_edge_data_with_hint(&edge_datas);
+        self.add_edges(edge_datas);
     }
 
     /// Gets the data for an edge all in one place.
@@ -662,6 +704,12 @@ impl Frame {
         index
     }
 
+    /// Sets the face data of this frame. This clears all previous face data.
+    pub fn set_faces(&mut self, face_datas: FaceDatas) {
+        self.init_face_data_with_hint(&face_datas);
+        self.add_faces(face_datas);
+    }
+
     ///// Tries to add a face given some face data and vertices (instead of half-edges) and returns its index.
     ///// Modifies frame attributes as necessary to remove contradictions.
     ///// Returns `None` if the resulting face is ambiguous (multiple edges connect the same two adjacent vertices.)
@@ -688,6 +736,19 @@ impl Frame {
     pub fn add_face_like(&mut self, face: Face, half_edges: Vec<HalfEdge>) -> Face {
         let data = FaceData { half_edges, ..self.face_data(face) };
         self.add_face(data)
+    }
+
+    /// Sets the vertices and edges all in one go. This clears all previous vertex, edge, and face data.
+    pub fn set_vertices_edges(&mut self, vertex_datas: VertexDatas, edge_datas: EdgeDatas, default_num_dimensions: usize) {
+        self.set_vertices(vertex_datas, default_num_dimensions);
+        self.set_edges(edge_datas);
+    }
+
+    /// Sets the vertices, edges, and faces all in one go. This clears all previous vertex, edge, and face data.
+    pub fn set_vertices_edges_faces(&mut self, vertex_datas: VertexDatas, edge_datas: EdgeDatas, face_datas: FaceDatas, default_num_dimensions: usize) {
+        self.set_vertices(vertex_datas, default_num_dimensions);
+        self.set_edges(edge_datas);
+        self.set_faces(face_datas);
     }
 
     fn remap_vertices_refs(&mut self, new_indices: TiVec<Vertex, Option<Vertex>>) {
