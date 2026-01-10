@@ -1,8 +1,7 @@
 // Algebraics. Used for checking solutions from the PSLQ algorithm for correctness.
-// Unfortunately, now we're using 3 bigint libraries because they're all incompatible with each other
+// Unfortunately, now we're using 2 bigint libraries because they're all incompatible with each other
 // and used by different necessary libraries
 // * malachite::Integer (because malachite_q::Rational exists. And it's faster than num_rational. And it was first.)
-// * dashu_int::IBig (because dashu_float is used for arbitrary precision floats for pslq )
 // * num_bigint::BigInt (because algebraics, used for checking pslq solutions, uses it, and there's no alternative)
 
 use std::cmp::Ordering;

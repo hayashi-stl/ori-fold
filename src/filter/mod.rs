@@ -1,4 +1,4 @@
-use std::{iter, mem};
+use std::{iter, mem, ops::Neg};
 
 use exact_number::{BasedExpr};
 use indexmap::{indexmap, map::Entry, IndexMap};
@@ -150,8 +150,8 @@ impl Coordinate for BasedExpr {
     }
 }
 
-pub trait RefCoordinate<Base: Coordinate>: RefNum<Base> + RefIntoOrdAngleOp<Base> {}
-impl<Base: Coordinate, T: RefNum<Base> + RefIntoOrdAngleOp<Base>> RefCoordinate<Base> for T {}
+pub trait RefCoordinate<Base: Coordinate>: RefNum<Base> + Neg<Output = Base> + RefIntoOrdAngleOp<Base> {}
+impl<Base: Coordinate, T: RefNum<Base> + Neg<Output = Base> + RefIntoOrdAngleOp<Base>> RefCoordinate<Base> for T {}
 
 //pub trait SliceEx {
 //    type Elem;

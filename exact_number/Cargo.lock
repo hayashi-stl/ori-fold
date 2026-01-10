@@ -14,7 +14,7 @@ dependencies = [
 [[package]]
 name = "algebraics"
 version = "0.3.0"
-source = "git+https://salsa.debian.org/Kazan-team/algebraics#3cd0b180717a5d1947dcba9b96a7f590e43ba21b"
+source = "git+https://github.com/hayashi-stl/algebraics#3f95d07215360830f566638cbc23ff1b40549b55"
 dependencies = [
  "lazy_static",
  "num-bigint",
