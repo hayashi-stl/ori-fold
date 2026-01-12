@@ -976,6 +976,21 @@ impl Frame {
         }
     }
 
+    /// Gets the bounding box from vertex coordinates, returning (min coords, max coords).
+    /// Requires the appropriate `vertices_coords` field to exist, but will return `None` if it contains 0 vertices.
+    pub fn bounding_box<T: Coordinate>(&self) -> Option<(DVector<T>, DVector<T>)> {
+        let vc = vertices_coords!(<T> self).as_ref().expect("vertices_coords must exist");
+        if vc.len() == 0 { return None; }
+
+        let mut min = vc.column(0).clone_owned();
+        let mut max = vc.column(0).clone_owned();
+        for col in vc.column_iter().skip(1) {
+            min = col.inf(&min.as_view());
+            max = col.sup(&max.as_view());
+        }
+        return Some((min, max))
+    }
+
     /// Computes the approximate coordinates [`Frame::vertices_coords_f64`]
     /// from the exact coordinates [`Frame::vertices_coords_exact`]
     fn calc_approx_coordinates(&mut self) {
@@ -1145,9 +1160,9 @@ pub fn other_vertex(edge: [Vertex; 2], vertex: Vertex) -> Vertex {
 
 #[cfg(test)]
 mod test {
-    use exact_number::{based_expr, Angle};
+    use exact_number::{Angle, BasedExpr, based_expr};
     use indexmap::{indexmap, indexset};
-    use nalgebra::{DMatrix, DVector};
+    use nalgebra::{DMatrix, DVector, dmatrix, dvector};
     use serde_json::json;
     use typed_index_collections::ti_vec;
 
@@ -2301,5 +2316,57 @@ mod test {
             vec![H(8), H(4), H(6), H(8), H(3), H(1)],
             vec![H(0), H(2), H(4), H(6)],
         ]));
+    }
+
+    fn bounding_box_test(mut frame: Frame, expected: Option<(DVector<BasedExpr>, DVector<BasedExpr>)>) {
+        assert_eq!(frame.bounding_box::<BasedExpr>(), expected);
+        
+        frame.calc_approx_coordinates();
+        let expected = expected.map(|(min, max)|
+            (min.map(|c| c.round_to_nearest_f64()), max.map(|c| c.round_to_nearest_f64())));
+        assert_eq!(frame.bounding_box::<f64>(), expected);
+    }
+    
+    #[test]
+    fn test_bounding_box() {
+        bounding_box_test(Frame {
+            vertices_coords_exact: Some(dmatrix![
+            ].transpose()),
+            ..Default::default()
+        }, None);
+
+        bounding_box_test(Frame {
+            vertices_coords_exact: Some(dmatrix![
+                based_expr!(1), based_expr!(2), based_expr!(3)
+            ].transpose()),
+            ..Default::default()
+        }, Some((
+            dvector![based_expr!(1), based_expr!(2), based_expr!(3)],
+            dvector![based_expr!(1), based_expr!(2), based_expr!(3)],
+        )));
+
+        bounding_box_test(Frame {
+            vertices_coords_exact: Some(dmatrix![
+                based_expr!(1), based_expr!(2);
+                based_expr!(3), based_expr!(4);
+                based_expr!(5), based_expr!(6);
+            ].transpose()),
+            ..Default::default()
+        }, Some((
+            dvector![based_expr!(1), based_expr!(2)],
+            dvector![based_expr!(5), based_expr!(6)],
+        )));
+
+        bounding_box_test(Frame {
+            vertices_coords_exact: Some(dmatrix![
+                based_expr!(1), based_expr!(6);
+                based_expr!(3), based_expr!(2);
+                based_expr!(5), based_expr!(4);
+            ].transpose()),
+            ..Default::default()
+        }, Some((
+            dvector![based_expr!(1), based_expr!(2)],
+            dvector![based_expr!(5), based_expr!(6)],
+        )));
     }
 }
