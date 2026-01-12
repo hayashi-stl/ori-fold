@@ -2,7 +2,7 @@ use std::{iter, mem, ops::Neg};
 
 use exact_number::{BasedExpr};
 use indexmap::{indexmap, map::Entry, IndexMap};
-use nalgebra::{DMatrix, DVector, Dim, Dyn, RealField, Scalar, VectorView};
+use nalgebra::{DMatrix, DVector, Dim, Dyn, RealField, Scalar, Vector2, VectorView};
 use num_traits::RefNum;
 use typed_index_collections::{ti_vec, TiVec};
 
@@ -1041,13 +1041,20 @@ impl Frame {
             let coords = check_and_flush_coordinates(coords, true)?;
             let coords = coords.map(|c| T::assert_f64_from(c));
             let ev = self.edges_vertices.as_ref().unwrap();
+            let coords_mapping = |&e: &Edge| ev[e].map(|v| coords.fixed_view::<2, 1>(0, v.0));
             let splits = intersect::intersect_all_segments_ref(
                 (0..self.edges_vertices.as_ref().unwrap().len()).map(Edge),
-                |&e| ev[e].map(|v| coords.fixed_view::<2, 1>(0, v.0)),
+                coords_mapping,
                 intersect::NoReportSplitters
             );
             if !splits.is_empty() { 
-                return Err(vec![PlanarWithFacesError::TooDegenerate { epsilon: epsilon.clone().assert_f64_into() }])
+                return Err(vec![PlanarWithFacesError::IntersectionsRemain {
+                    splits: splits.into_iter().map(|(edge, split)| {
+                        (coords_mapping(&edge).map(|c| c.map(|c| c.assert_f64_into())),
+                            split.map(|c| c.assert_f64_into()))
+                    }).collect(),
+                    epsilon: epsilon.clone().assert_f64_into()
+                }])
             }
         }
         self.sort_vertices_half_edges::<T>(); // this is unambiguous now
@@ -1121,7 +1128,8 @@ pub enum PlanarWithFacesError {
     /// Note that an epsilon of 0 is not supported due to the fact that intersection coordinates
     /// can't be computed exactly in general.
     EpsilonTooSmall { epsilon: f64 },
-    TooDegenerate { epsilon: f64 },
+    /// Intersections were found even after trying to get rid of them.
+    IntersectionsRemain { splits: Vec<([Vector2<f64>; 2], Vector2<f64>)>, epsilon: f64 },
 }
 
 //impl PlanarWithFacesError<f64> {
