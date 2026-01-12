@@ -1049,6 +1049,9 @@ impl Frame {
             );
             if !splits.is_empty() { 
                 return Err(vec![PlanarWithFacesError::IntersectionsRemain {
+                    segments: (0..ev.len()).map(Edge).map(|edge|
+                        coords_mapping(&edge).map(|c| c.map(|c| c.assert_f64_into()))
+                    ).collect(),
                     splits: splits.into_iter().map(|(edge, split)| {
                         (coords_mapping(&edge).map(|c| c.map(|c| c.assert_f64_into())),
                             split.map(|c| c.assert_f64_into()))
@@ -1129,7 +1132,7 @@ pub enum PlanarWithFacesError {
     /// can't be computed exactly in general.
     EpsilonTooSmall { epsilon: f64 },
     /// Intersections were found even after trying to get rid of them.
-    IntersectionsRemain { splits: Vec<([Vector2<f64>; 2], Vector2<f64>)>, epsilon: f64 },
+    IntersectionsRemain { segments: Vec<[Vector2<f64>; 2]>, splits: Vec<([Vector2<f64>; 2], Vector2<f64>)>, epsilon: f64 },
 }
 
 //impl PlanarWithFacesError<f64> {
