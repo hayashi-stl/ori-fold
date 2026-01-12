@@ -264,7 +264,7 @@ impl Frame {
             data.coords_f64.as_ref().map(|_| VertexField::CoordsF64),
         ].into_iter().flatten().chain(data.custom.keys().map(|k| VertexField::Custom(k.clone())));
         let num_dimensions = data.coords_exact.as_ref().map(|c| c.nrows())
-            .or(data.coords_f64.as_ref().map(|c| c.ncols()))
+            .or(data.coords_f64.as_ref().map(|c| c.nrows()))
             .unwrap_or(default_num_dimensions);
         self.init_vertex_data(fields, num_dimensions);
     }
