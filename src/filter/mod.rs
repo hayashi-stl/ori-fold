@@ -1028,9 +1028,7 @@ impl Frame {
                 return Err(vec![PlanarWithFacesError::EpsilonTooSmall { epsilon: intersect_epsilon }])
             }
             self.intersect_all_edges(&T::assert_f64_from(intersect_epsilon));
-        }
 
-        if !T::EXACT {
             // Because intersection points are not generated exactly, run the intersection algorithm
             // again to confirm that all intersections have indeed been split.
             // (or rather, that the newly-created intersection points don't cause new intersections)

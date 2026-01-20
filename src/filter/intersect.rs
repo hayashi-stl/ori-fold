@@ -239,8 +239,11 @@ impl<E: Clone + Eq> Event for EventF64<E> {
         if robust::cross_2d(lines[1][0], lines[1][1], lines[0][0], lines[0][1]) < 0.0 {
             lines.swap(0, 1); // sort segments clockwise
         }
+        //println!("Lines: {lines:?}");
         if robust::orient_2d(lines[1][0], lines[1][1], lines[0][0]) >= 0.0 ||
-            robust::orient_2d(lines[1][0], lines[1][1], lines[0][1]) <= 0.0 {
+            robust::orient_2d(lines[1][0], lines[1][1], lines[0][1]) <= 0.0 ||
+            robust::orient_2d(lines[0][0], lines[0][1], lines[1][0]) <= 0.0 ||
+            robust::orient_2d(lines[0][0], lines[0][1], lines[1][1]) >= 0.0 {
             return None; // does not intersect
         }
         if TimeF64::Intersect(lines) > time {
@@ -1409,5 +1412,22 @@ mod test {
             (0, vector![4.0 / 3.0, 0.0]),
             (1, vector![4.0 / 3.0, 0.0]),
         ], epsilon);
+    }
+
+    #[test]
+    fn test_intersect_all_segments_prev_fail() {
+        // A concave quadrilateral that should have no splits
+        let vectors = vec![
+            vector![24.76898401402125, 12.324052903409104],
+            vector![19.67497688028523, 6.820689902766358],
+            vector![18.488339670389113, 8.255379931856034],
+            vector![20.825220709764483, 9.255379931856034],
+        ];
+
+        let segments = vec![[0, 1], [2, 3]];
+        let splits = canonicalize_f64(f64::intersect_all_segments_ref(
+            0..segments.len(), |s| segments[*s].map(|p| vectors[p].as_view()), &0.0,
+        ));
+        assert_eq!(splits, vec![]);
     }
 }
