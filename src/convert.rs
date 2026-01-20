@@ -5,7 +5,7 @@ use nalgebra::{vector, Affine2, DMatrixView, Matrix2xX, Matrix3, RealField};
 use num_traits::RefNum;
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{fold::{EdgesVerticesEx, Edge, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdgesSlice, Frame, FrameAttribute, Vertex}, geom::{MatrixView2Dyn, NumEx}, manifold::OrientableError};
+use crate::{Coordinate, fold::{Edge, EdgesFaceCornersEx, EdgesFaceCornersSlice, EdgesVerticesEx, EdgesVerticesSlice, Face, FaceCorner, FacesHalfEdgesSlice, Frame, FrameAttribute, Vertex}, geom::{MatrixView2Dyn, NumEx}, manifold::OrientableError, vertices_coords};
 use crate::geom;
 
 /// Assuming a locally flat foldable crease pattern in the xy plane
@@ -102,10 +102,11 @@ impl Frame {
     /// * `faces_half_edges` exists (this is at least temporary)
     /// * no edges have length 0
     /// * all vertices are closed according to Kawasaki's theorem
-    pub fn flat_folded_geometry_unchecked<T: NumEx + RealField>(&self, root_face: Face, vertices_coords: DMatrixView<'_, T>)
+    pub fn flat_folded_geometry_unchecked<T: Coordinate + RealField>(&self, root_face: Face)
         -> (Matrix2xX<T>, TiVec<Face, Affine2<T>>, TiVec<Face, bool>) where
         for<'a> &'a T: RefNum<T>
     {
+        let vertices_coords = vertices_coords!(<T> self).as_ref().expect("Missing vertex coordinates");
         let vertices_coords = vertices_coords.fixed_rows::<2>(0);
         let faces_half_edges = self.faces_half_edges.as_ref().unwrap();
         let edges_face_corners = self.edges_face_corners.as_ref().unwrap();
@@ -130,10 +131,11 @@ impl Frame {
     /// * `faces_half_edges` does not exist (this is at least temporary)
     /// * an edge has length 0
     /// * a vertex isn't closed according to Kawasaki's theorem
-    pub fn try_flat_folded_geometry<T: NumEx + RealField>(&self, root_face: Face, vertices_coords: DMatrixView<'_, T>)
+    pub fn try_flat_folded_geometry<T: RealField + Coordinate>(&self, root_face: Face)
         -> Result<(Matrix2xX<T>, TiVec<Face, Affine2<T>>, TiVec<Face, bool>), Vec<FlatFoldError>> where
         for<'a> &'a T: RefNum<T>
     {
+        let vertices_coords = vertices_coords!(<T> self).as_ref().expect("Missing vertex coordinates");
         let orientable = if self.frame_attributes.contains(&FrameAttribute::Orientable) {
             self
         } else {
@@ -188,16 +190,15 @@ impl Frame {
 #[cfg(test)]
 mod test {
     use exact_number::based_expr;
-    use nalgebra::{Affine2, DMatrix, Matrix2xX, RealField};
+    use nalgebra::{Affine2, DMatrix, Matrix2xX, RealField, dmatrix};
     use num_traits::RefNum;
     use typed_index_collections::{ti_vec, TiVec};
 
-    use crate::{fold::{Face as F, Frame, HalfEdge as H}, geom::NumEx};
+    use crate::{Coordinate, fold::{Face as F, Frame, HalfEdge as H}, geom::NumEx};
 
-    fn flat_folded_geometry_success_test<T: NumEx + RealField>(
+    fn flat_folded_geometry_success_test<T: Coordinate + RealField>(
         frame: Frame,
         root_face: F,
-        coords: DMatrix<T>,
         expected_geometry: Matrix2xX<T>,
         expected_transforms: TiVec<F, Affine2<T>>,
         expected_reflecteds: TiVec<F, bool>
@@ -205,8 +206,8 @@ mod test {
         for<'a> &'a T: RefNum<T>
     {
         let result = (expected_geometry, expected_transforms, expected_reflecteds);
-        assert_eq!(frame.flat_folded_geometry_unchecked(root_face, coords.as_view()), result);
-        assert_eq!(frame.try_flat_folded_geometry(root_face, coords.as_view()), Ok(result));
+        assert_eq!(frame.flat_folded_geometry_unchecked::<T>(root_face), result);
+        assert_eq!(frame.try_flat_folded_geometry::<T>(root_face), Ok(result));
     }
 
     macro_rules! exact_affine_2 {
@@ -222,19 +223,19 @@ mod test {
     #[test]
     fn test_flat_folded_geometry() {
         // A simple square.
-        flat_folded_geometry_success_test(Frame {..Default::default()}.with_topology_vh_fh(Some(ti_vec![
+        flat_folded_geometry_success_test(Frame { vertices_coords_exact: Some(dmatrix![
+            based_expr!(0), based_expr!(0);
+            based_expr!(1), based_expr!(0);
+            based_expr!(1), based_expr!(1);
+            based_expr!(0), based_expr!(1);
+        ].transpose()), ..Default::default() }.with_topology_vh_fh(Some(ti_vec![
             vec![H(0), H(7)],
             vec![H(2), H(1)],
             vec![H(4), H(3)],
             vec![H(6), H(5)],
         ]), Some(ti_vec![
             vec![H(0), H(2), H(4), H(6)],
-        ])), F(0), DMatrix::from_vec(2, 4, vec![
-            based_expr!(0), based_expr!(0),
-            based_expr!(1), based_expr!(0),
-            based_expr!(1), based_expr!(1),
-            based_expr!(0), based_expr!(1),
-        ]), Matrix2xX::from_vec(vec![
+        ])), F(0), Matrix2xX::from_vec(vec![
             based_expr!(0), based_expr!(0),
             based_expr!(1), based_expr!(0),
             based_expr!(1), based_expr!(1),
@@ -246,7 +247,13 @@ mod test {
         ]);
 
         // A square attached to a triangle.
-        flat_folded_geometry_success_test(Frame {..Default::default()}.with_topology_vh_fh(Some(ti_vec![
+        flat_folded_geometry_success_test(Frame { vertices_coords_exact: Some(dmatrix![
+            based_expr!(0), based_expr!(0);
+            based_expr!(1), based_expr!(0);
+            based_expr!(1), based_expr!(1);
+            based_expr!(0), based_expr!(1);
+            based_expr!(7/4), based_expr!(1/2);
+        ].transpose()), ..Default::default()}.with_topology_vh_fh(Some(ti_vec![
             vec![H(0), H(7)],
             vec![H(8), H(2), H(1)],
             vec![H(4), H(3), H(11)],
@@ -255,13 +262,7 @@ mod test {
         ]), Some(ti_vec![
             vec![H(0), H(2), H(4), H(6)],
             vec![H(8), H(10), H(3)],
-        ])), F(0), DMatrix::from_vec(2, 5, vec![
-            based_expr!(0), based_expr!(0),
-            based_expr!(1), based_expr!(0),
-            based_expr!(1), based_expr!(1),
-            based_expr!(0), based_expr!(1),
-            based_expr!(7/4), based_expr!(1/2),
-        ]), Matrix2xX::from_vec(vec![
+        ])), F(0), Matrix2xX::from_vec(vec![
             based_expr!(0), based_expr!(0),
             based_expr!(1), based_expr!(0),
             based_expr!(1), based_expr!(1),
