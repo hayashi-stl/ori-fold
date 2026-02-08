@@ -93,51 +93,49 @@ pub enum FlatFoldError {
 }
 
 #[derive(Clone, Debug)]
-/// An error resulting from trying to convert a faces-vertices map to a faces-half-edges map 
-pub enum FacesVerticesToFacesHalfEdgesError {
-    /// Two consecutive vertices in a face aren't actually connected by an edge
-    NoEdge { face: Face, vertices: [Vertex; 2] },
-    /// Two consecutive vertices in a face are connected by too many edges
-    TooManyEdges { face: Face, vertices: [Vertex; 2], edges: [HalfEdge; 2] }
+/// An error resulting from trying to convert a face from vertices to half-edges.
+pub enum FaceVerticesToHalfEdgesError {
+    /// Two consecutive vertices aren't actually connected by an edge
+    NoEdge { vertices: [Vertex; 2] },
+    /// Two consecutive vertices are connected by too many edges
+    TooManyEdges { vertices: [Vertex; 2], edges: [HalfEdge; 2] }
 }
 
-impl Display for FacesVerticesToFacesHalfEdgesError {
+impl Display for FaceVerticesToHalfEdgesError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "faces-vertices to faces-half-edges error: ")?;
         match self {
-            Self::NoEdge { face, vertices } => {
-                write!(f, "face {face} contains two adjacent vertices ({vertices:?}) that aren't connected by an edge")
+            Self::NoEdge { vertices } => {
+                write!(f, "two adjacent vertices ({vertices:?}) aren't connected by an edge")
             }
-            Self::TooManyEdges { face, vertices, edges } => {
-                write!(f, "face {face} contains two adjacent vertices ({vertices:?}) that are connected by at least 2 edges ({edges:?}), which is too many")
+            Self::TooManyEdges { vertices, edges } => {
+                write!(f, "two adjacent vertices ({vertices:?}) are connected by at least 2 edges ({edges:?}), which is too many")
             }
         }
     }
 }
 
 impl Frame {
-    /// Converts a face-vertex map into a face-half-edge map. Requires edge data to exist.
-    pub fn try_faces_vertices_to_faces_half_edges(&self, faces_vertices: &FacesVerticesSlice) -> Result<FacesHalfEdges, Vec<FacesVerticesToFacesHalfEdgesError>> {
-        use FacesVerticesToFacesHalfEdgesError::*;
+    /// Converts a face from vertex representation to half-edge representation. Requires edge data to exist.
+    pub fn try_face_vertices_to_half_edges(&self, face_vertices: &[Vertex]) -> Result<Vec<HalfEdge>, Vec<FaceVerticesToHalfEdgesError>> {
+        use FaceVerticesToHalfEdgesError::*;
 
-        let mut faces = ti_vec![vec![]; faces_vertices.len()];
+        let mut result = vec![];
         let mut errors = vec![];
         let vh = self.vertices_half_edges.as_ref().unwrap(); // required by spec
         let ev = self.edges_vertices.as_ref().unwrap(); // required by spec
-        for (face, vertices) in faces_vertices.iter_enumerated() {
-            for (&v0, &v1) in vertices.iter().zip(vertices.iter().cycle().skip(1)) {
-                let mut edges = vh[v0].iter().copied().filter(|&h| ev.at(h)[1] == v1);
-                match edges.next() {
-                    None => { errors.push(NoEdge { face, vertices: [v0, v1] }); continue }
-                    Some(h) => { faces[face].push(h) }
-                }
-                match edges.next() {
-                    None => (),
-                    Some(h) => { errors.push(TooManyEdges { face, vertices: [v0, v1], edges: [faces[face][0], h] })}
-                }
+        for (&v0, &v1) in face_vertices.iter().zip(face_vertices.iter().cycle().skip(1)) {
+            let mut edges = vh[v0].iter().copied().filter(|&h| ev.at(h)[1] == v1);
+            match edges.next() {
+                None => { errors.push(NoEdge { vertices: [v0, v1] }); continue }
+                Some(h) => { result.push(h) }
+            }
+            match edges.next() {
+                None => (),
+                Some(h) => { errors.push(TooManyEdges { vertices: [v0, v1], edges: [result[0], h] })}
             }
         }
-        if errors.is_empty() { Ok(faces) } else { Err(errors) }
+        if errors.is_empty() { Ok(result) } else { Err(errors) }
     }
 
     /// Computes the flat-folded geometry as in `Frame::try_flat_folded_geometry` without
@@ -268,7 +266,7 @@ mod test {
     }
 
     #[test]
-    fn test_faces_vertices_to_faces_half_edges() {
+    fn test_face_vertices_to_faces_half_edges() {
         // A simple square.
         let frame = Frame::new().with_topology_vh_fh(Some(ti_vec![
             vec![H(0), H(7)],
@@ -276,12 +274,9 @@ mod test {
             vec![H(4), H(3)],
             vec![H(6), H(5)],
         ]), None);
-        let faces_vertices = ti_vec![
-            vec![V(2), V(1), V(0), V(3)]
-        ];
-        assert_eq!(frame.try_faces_vertices_to_faces_half_edges(&faces_vertices).unwrap(), ti_vec![
+        assert_eq!(frame.try_face_vertices_to_half_edges(&[V(2), V(1), V(0), V(3)]).unwrap(),
             vec![H(3), H(1), H(7), H(5)]
-        ]);
+        );
     }
 
     #[test]
