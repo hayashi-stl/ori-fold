@@ -1,8 +1,8 @@
 #![cfg(test)]
 
-use exact_number::BasedExpr;
+use exact_number::{BasedExpr, conversion::BaselessFrom};
 use indexmap::{indexset};
-use nalgebra::DMatrix;
+use nalgebra::{DMatrix, Vector2, vector};
 use rand_distr::{Distribution, Uniform};
 use rand_pcg::Pcg64;
 use typed_index_collections::{ti_vec};
@@ -170,6 +170,27 @@ impl Frame {
         self.init_face_data([]);
         self.add_faces(FaceDatas::default_with_half_edges(faces_half_edges.into()));
         self
+    }
+
+    pub(crate) fn grid_test(rows: usize, cols: usize, coords: impl FnMut(Vector2<BasedExpr>) -> Vector2<BasedExpr> + Clone) -> Self {
+        dbg!(Frame::new().init_topology_coords_exact_ev(DMatrix::from_iterator(
+            2, (cols + 1) * (rows + 1), (0..=rows).flat_map(|y| {
+                let mut coords = coords.clone();
+                (0..=cols).flat_map(move |x| {
+                    let [result] = coords(vector![BasedExpr::baseless_from(x), BasedExpr::baseless_from(y)]).data.0;
+                    result
+        })})), (0..=rows).flat_map(|y| (0..cols).map(move |x| {
+            [Vertex((cols + 1) * y + x), Vertex((cols + 1) * y + (x + 1))]
+        })).chain((0..=cols).flat_map(|x| (0..rows).map(move |y| {
+            [Vertex((cols + 1) * y + x), Vertex((cols + 1) * (y + 1) + x)]
+        }))).collect())).with_topology_fh((0..rows).flat_map(|y| (0..cols).map(move |x| {
+            vec![
+                HalfEdge::new(Edge(cols * y + x), false),
+                HalfEdge::new(Edge((rows + 1) * cols + rows * (x + 1) + y), false),
+                HalfEdge::new(Edge(cols * (y + 1) + x), true),
+                HalfEdge::new(Edge((rows + 1) * cols + rows * x + y), true),
+            ]
+        })).collect())
     }
 }
 

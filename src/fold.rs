@@ -439,20 +439,39 @@ impl Display for FaceCorner {
 #[serde(transparent)]
 pub struct FrameIndex(pub usize);
 
+/// Map from vertices to half-edges
 pub type VerticesHalfEdges = TiVec<Vertex, Vec<HalfEdge>>;
+/// Map slice from vertices to half-edges
 pub type VerticesHalfEdgesSlice = TiSlice<Vertex, Vec<HalfEdge>>;
+/// Map from edges to vertices
 pub type EdgesVertices = TiVec<Edge, [Vertex; 2]>;
+/// Map slice from edges to vertices
 pub type EdgesVerticesSlice = TiSlice<Edge, [Vertex; 2]>;
+/// Map from edges to face-corners
 pub type EdgesFaceCorners = TiVec<Edge, [Vec<FaceCorner>; 2]>;
+/// Map slice from edges to face-corners
 pub type EdgesFaceCornersSlice = TiSlice<Edge, [Vec<FaceCorner>; 2]>;
+/// Map from faces to half-edges
 pub type FacesHalfEdges = TiVec<Face, Vec<HalfEdge>>;
+/// Map slice from faces to half-edges
 pub type FacesHalfEdgesSlice = TiSlice<Face, Vec<HalfEdge>>;
+/// Map from vertices to custom data
 pub type VerticesCustom = TiVec<Vertex, Value>;
+/// Map slice from vertices to custom data
 pub type VerticesCustomSlice = TiSlice<Vertex, Value>;
+/// Map from edges to custom data
 pub type EdgesCustom = TiVec<Edge, Value>;
+/// Map slice from edges to custom data
 pub type EdgesCustomSlice = TiSlice<Edge, Value>;
+/// Map from faces to custom data
 pub type FacesCustom = TiVec<Face, Value>;
+/// Map slice from faces to custom data
 pub type FacesCustomSlice = TiSlice<Face, Value>;
+
+/// Map from faces to vertices. Not part of the actual [`Frame`] structure
+pub type FacesVertices = TiVec<Face, Vec<Vertex>>;
+/// Map slice from faces to vertices. Not part of the actual [`Frame`] structure
+pub type FacesVerticesSlice = TiSlice<Face, Vec<Vertex>>;
 
 pub trait EdgesVerticesEx {
     fn at(&self, index: HalfEdge) -> [Vertex; 2];
