@@ -5,7 +5,7 @@ use exact_number::BasedExpr;
 use indexmap::{IndexMap, indexmap};
 use nalgebra::{DVector, DefaultAllocator, Dim, Dyn, OVector, Scalar, U1, Vector, VectorView, allocator::Allocator};
 
-use crate::{AtFaceCorner, Edge, EdgeData, EdgesFaceCornersEx, EdgesVerticesEx, FaceCorner, Frame, FrameAttribute, HalfEdge, Vertex, filter::Coordinate, geom::{FloatOrd, NumEx}, vertices_coords};
+use crate::{AtFaceCorner, Edge, EdgeData, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, filter::Coordinate, geom::{FloatOrd, NumEx}, vertices_coords};
 
 pub trait MergeCoordinate: Sized + Scalar {
     type Hash<'a, D: Dim>: Hash where
@@ -424,6 +424,34 @@ impl Frame {
             }
         }
     }
+
+    /// Splits a face along a new edge created connected two of its corners.
+    /// The new edge uses the data provided in `edge_data` except the vertices.
+    /// 
+    /// The face winding `face_corners` in order maintains its index, and the index of
+    /// the other face is returned. No other face indices change.
+    /// In each face, the new edge shows up last.
+    pub fn split_face(&mut self, face: Face, mut corners: [usize; 2], mut edge_data: EdgeData) -> (Edge, Face) {
+        let half_edges = self.faces_half_edges.as_ref().unwrap()[face].clone();
+        let ev = self.edges_vertices.as_ref().unwrap();
+        let vertices = corners.map(|c| ev.at(half_edges[c])[0]);
+        edge_data.vertices = vertices;
+        let edge = self.add_edge(edge_data);
+
+        corners[1] = corners[0] + (corners[1] + half_edges.len() - corners[0]) % half_edges.len();
+        let loop_0 = half_edges.iter().copied().cycle().skip(corners[1]).take(corners[0] + half_edges.len() - corners[1])
+            .chain([HalfEdge::new(edge, false)]).collect::<Vec<_>>();
+        let loop_1 = half_edges.iter().copied().cycle().skip(corners[0]).take(corners[1] - corners[0])
+            .chain([HalfEdge::new(edge, true)]).collect::<Vec<_>>();
+
+        // Index-preserving strategy: add a face, swap-remove the original, then add the other face.
+        let face_data = self.face_data(face);
+        self.add_face_unchecked(FaceData { half_edges: loop_0, ..face_data.clone() });
+        self.swap_remove_face(face);
+        let new_face = self.add_face_unchecked(FaceData { half_edges: loop_1, ..face_data });
+        self.fix_manifold_attributes_on_faces([face, new_face]);
+        return (edge, new_face);
+    }
 }
 
 #[cfg(test)]
@@ -433,7 +461,7 @@ mod test {
     use typed_index_collections::{TiVec, ti_vec};
 
     use crate::filter::split_merge::PointMerger;
-    use crate::{Frame, FrameAttribute};
+    use crate::{EdgeData, Frame, FrameAttribute};
     use crate::{Vertex as V, Edge as E, HalfEdge as H, FaceCorner as C, Face as F};
 
     #[test]
@@ -1000,6 +1028,55 @@ mod test {
             vec![H(7), H(5), H(3), H(1)],
             vec![H(1), H(0)],
         ]));
+        frame.assert_topology_consistent();
+    }
+
+    #[test]
+    fn test_split_face() {
+        // A simple pentagon.
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(9), H(0)],
+            vec![H(1), H(2)],
+            vec![H(3), H(4)],
+            vec![H(5), H(6)],
+            vec![H(7), H(8)],
+        ]), Some(ti_vec![
+            vec![H(5), H(3), H(1), H(9), H(7)],
+        ]));
+        let old_face = F(0);
+        let (new_edge, new_face) = frame.split_face(old_face, [0, 2], EdgeData::default_with_vertices([V(0), V(0)]));
+        assert!(frame.frame_attributes.contains(&FrameAttribute::Orientable));
+        assert_eq!(new_edge, E(5));
+        assert_eq!(new_face, F(1));
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[new_edge], [V(3), V(1)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[old_face], vec![H(1), H(9), H(7), H::new(new_edge, false)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[new_face], vec![H(5), H(3), H::new(new_edge, true)]);
+        frame.assert_topology_consistent();
+
+        // A simple pentagon, but now the corner order is flipped. It better work.
+        let mut frame = Frame {
+            frame_attributes: indexset![FrameAttribute::Manifold, FrameAttribute::Orientable],
+            ..Default::default()
+        }.with_topology_vh_fh(Some(ti_vec![
+            vec![H(9), H(0)],
+            vec![H(1), H(2)],
+            vec![H(3), H(4)],
+            vec![H(5), H(6)],
+            vec![H(7), H(8)],
+        ]), Some(ti_vec![
+            vec![H(5), H(3), H(1), H(9), H(7)],
+        ]));
+        let old_face = F(0);
+        let (new_edge, new_face) = frame.split_face(old_face, [2, 0], EdgeData::default_with_vertices([V(0), V(0)]));
+        assert!(frame.frame_attributes.contains(&FrameAttribute::Orientable));
+        assert_eq!(new_edge, E(5));
+        assert_eq!(new_face, F(1));
+        assert_eq!(frame.edges_vertices.as_ref().unwrap()[new_edge], [V(1), V(3)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[old_face], vec![H(5), H(3), H::new(new_edge, false)]);
+        assert_eq!(frame.faces_half_edges.as_ref().unwrap()[new_face], vec![H(1), H(9), H(7), H::new(new_edge, true)]);
         frame.assert_topology_consistent();
     }
 }

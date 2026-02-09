@@ -835,6 +835,23 @@ impl Frame {
         self.merge_nearby_vertices(epsilon);
         self.merge_doubled_edges();
     }
+
+    ///// Splits edges and faces along a line defined by two points
+    ///// Beware, as there is no epsilon and nothing gets merged.
+    //pub fn split_at_line<T: NumEx + Coordinate>(&mut self, line: [VectorView2Dyn<T>; 2]) where
+    //    for<'a> &'a T: RefNum<T>
+    //{
+    //    let vertices_coords = vertices_coords!(<T> self).as_ref().unwrap(); // required by spec
+    //    assert_eq!(vertices_coords.nrows(), 2, "intersect_all_edges requires 2D coordinates");
+    //    let (mut box_min, mut box_max) = if let Some(b) = self.bounding_box::<T>() { b } else { return };
+    //    let min_x = std::mem::take(&mut box_min[0]);
+    //    let min_y = std::mem::take(&mut box_min[1]);
+    //    let max_x = std::mem::take(&mut box_max[0]);
+    //    let max_y = std::mem::take(&mut box_max[1]);
+    //    // Extend line to bounding box
+    //    let t_bottom = geom::parametric_line_intersect(
+    //        line, [vector![min_x.clone(), min_y.clone()].as_view(), vector![max_x.clone(), min_y.clone()].as_view()]);
+    //}
 }
 
 #[cfg(test)]
