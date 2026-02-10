@@ -648,7 +648,7 @@ pub enum Side {
 /// The number given here must obey the specification of [`InterpClass`] and its variants,
 /// except that in the case of floating-point, strict inequalities become weak, and infinities can go either way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Interp<T>(InterpClass, T);
+pub struct Interp<T>(pub InterpClass, pub T);
 
 /// A line intersection between segments `[s0, s1]` robustly classified into cases
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
