@@ -1184,6 +1184,16 @@ impl Frame {
         self.frame_attributes.swap_remove(&attr)
     }
 
+    /// Gets the number of edges. Requires edge data to exist.
+    pub fn num_edges(&self) -> usize {
+        self.edges_vertices.as_ref().unwrap().len()
+    }
+
+    /// Gets the number of faces. Requires face data to exist.
+    pub fn num_faces(&self) -> usize {
+        self.faces_half_edges.as_ref().unwrap().len()
+    }
+
     /// Gets a custom vertex field mutably. You cannot change the size of the array. 
     pub fn vertices_custom_field_mut(&mut self, field: &str) -> Option<&mut TiSlice<Vertex, Value>> {
         self.vertices_custom.get_mut(field).map(|v| v.as_mut_slice())

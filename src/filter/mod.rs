@@ -6,7 +6,7 @@ use nalgebra::{DMatrix, DVector, Dim, Dyn, RealField, Scalar, Vector2, VectorVie
 use num_traits::RefNum;
 use typed_index_collections::{ti_vec, TiVec};
 
-use crate::{EdgeDatas, FaceDatas, FaceField, VertexDatas, filter::{intersect::{IntersectAllSegmentsError, IntersectCoordinate}, split_merge::MergeCoordinate}, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::{self, AngleOps, FloatOrd, IntoOrd, IntoOrdAngle, IntoOrdAngleOp, NumEx, RefIntoOrdAngleOp}};
+use crate::{EdgeDatas, FaceDatas, FaceField, VertexDatas, filter::{intersect::{IntersectAllSegmentsError, IntersectCoordinate}, split_merge::MergeCoordinate}, fold::{AtFaceCorner, CoordsRef, Edge, EdgeAssignment, EdgeData, EdgeField, EdgesFaceCornersEx, EdgesVerticesEx, Face, FaceCorner, FaceData, Frame, FrameAttribute, HalfEdge, Vertex, VertexData, VertexField}, geom::{self, AngleOps, FloatOrd, IntoOrd, IntoOrdAngle, IntoOrdAngleOp, NumEx, RefIntoOrdAngleOp, RobustGeometry}};
 
 pub mod intersect;
 pub mod split_merge;
@@ -99,7 +99,7 @@ impl AssertType for f64 {
 
 impl AssertType for BasedExpr {}
 
-pub trait Coordinate: Sized + NumEx + IntersectCoordinate + MergeCoordinate + AssertType + IntoOrd + IntoOrdAngleOp + AngleOps {
+pub trait Coordinate: Sized + NumEx + RobustGeometry + IntersectCoordinate + MergeCoordinate + AssertType + IntoOrd + IntoOrdAngleOp + AngleOps {
     const EXACT: bool;
 
     /// Get the vertex coordinates, borrowing only the candidates instead of the entire frame

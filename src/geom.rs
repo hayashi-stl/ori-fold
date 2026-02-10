@@ -622,6 +622,165 @@ pub fn parametric_line_intersect<T: NumEx + RealField>
     mtx.try_inverse().map(|inv| inv * start_diff)
 }
 
+/// A *t*-value for a segment intersection
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum InterpClass {
+    /// t < 0
+    Lt0,
+    /// t = 0
+    Eq0,
+    /// 0 < t < 1
+    Gt0Lt1,
+    /// t = 1
+    Eq1,
+    /// t > 1
+    Gt1
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+/// A *t*-value for a segment intersection
+/// 
+/// The number given here must obey the specification of [`InterpClass`] and its variants,
+/// except that in the case of floating-point, strict inequalities become weak, and infinities can go either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Interp<T>(InterpClass, T);
+
+/// A line intersection between segments `[s0, s1]` robustly classified into cases
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClassifiedLineIntersection<T> {
+    /// line `s0` intersects with line `s1` with the given direction of `s0` an the interpolation value along `s0`.
+    /// Neither segment's length is 0.
+    Intersection(Side, Interp<T>),
+    /// line `s0` is parallel to `s1` and lies on the given side of `s1`
+    /// Segment `s0` may have length 0, but segment `s1` does not.
+    SeparateParallel(Side),
+    /// line `s0` is collinear to `s1`. The interpolation values of `s0[0]` and `s0[1]` are given.
+    /// Segment `s0` may have length 0, but segment `s1` does not.
+    Collinear([Interp<T>; 2]),
+    /// Segment `s1` has length 0.
+    Zero,
+}
+
+impl<T> Interp<T> {
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Interp<U> {
+        Interp(self.0, f(self.1))
+    }
+}
+
+impl<T> ClassifiedLineIntersection<T> {
+    pub fn map<U, F: FnMut(T) -> U + Clone>(self, mut f: F) -> ClassifiedLineIntersection<U> {
+        use ClassifiedLineIntersection::*;
+        match self {
+            Intersection(side, t) => Intersection(side, t.map(f)),
+            SeparateParallel(side) => SeparateParallel(side),
+            Collinear(sides) => Collinear(sides.map(|int| int.map(f.clone()))),
+            Zero => Zero,
+        }
+    }
+}
+
+pub trait RobustGeometry: Sized {
+    fn orient_2d(a: VectorView2Dyn<Self>, b: VectorView2Dyn<Self>, c: VectorView2Dyn<Self>) -> Self;
+    fn cross_2d(a: VectorView2Dyn<Self>, b: VectorView2Dyn<Self>, c: VectorView2Dyn<Self>, d: VectorView2Dyn<Self>) -> Self;
+}
+
+impl RobustGeometry for f32 {
+    fn orient_2d(a: VectorView2Dyn<Self>, b: VectorView2Dyn<Self>, c: VectorView2Dyn<Self>) -> Self {
+        robust::orient_2d(a.map(|c| c as f64), b.map(|c| c as f64), c.map(|c| c as f64)) as f32
+    }
+
+    fn cross_2d(a: VectorView2Dyn<Self>, b: VectorView2Dyn<Self>, c: VectorView2Dyn<Self>, d: VectorView2Dyn<Self>) -> Self {
+        robust::cross_2d(a.map(|c| c as f64), b.map(|c| c as f64), c.map(|c| c as f64), d.map(|c| c as f64)) as f32
+    }
+}
+
+impl RobustGeometry for f64 {
+    fn orient_2d(a: VectorView2Dyn<Self>, b: VectorView2Dyn<Self>, c: VectorView2Dyn<Self>) -> Self {
+        robust::orient_2d(a.into_owned(), b.into_owned(), c.into_owned())
+    }
+
+    fn cross_2d(a: VectorView2Dyn<Self>, b: VectorView2Dyn<Self>, c: VectorView2Dyn<Self>, d: VectorView2Dyn<Self>) -> Self {
+        robust::cross_2d(a.into_owned(), b.into_owned(), c.into_owned(), d.into_owned())
+    }
+}
+
+impl RobustGeometry for BasedExpr {
+    fn orient_2d(a: VectorView2Dyn<Self>, b: VectorView2Dyn<Self>, c: VectorView2Dyn<Self>) -> Self {
+        (a - &c).perp(&(b - c))
+    }
+
+    fn cross_2d(a: VectorView2Dyn<Self>, b: VectorView2Dyn<Self>, c: VectorView2Dyn<Self>, d: VectorView2Dyn<Self>) -> Self {
+        (b - a).perp(&(d - c))
+    }
+}
+
+/// Performs a robust line intersection, returning a [`ClassifiedLineIntersection`].
+/// Note that this is a one-sided intersection of `line_a` with respect to `line_b`.
+/// To check if *segment* `line_a` and *segment* `line_b` intersect, you must call this with both orders of `line_a` and `line_b`.
+pub fn robust_line_intersect<T: NumEx + RobustGeometry>(line_a: [VectorView2Dyn<T>; 2], line_b: [VectorView2Dyn<T>; 2]) -> ClassifiedLineIntersection<T> where
+    for<'a> &'a T: RefNum<T>
+{
+    let cross = T::cross_2d(line_b[0].clone(), line_b[1].clone(), line_a[0].clone(), line_a[1].clone());
+    let side = match cross.partial_cmp(&T::zero()).unwrap() {
+        Ordering::Less => Some(Side::Right),
+        Ordering::Equal => None,
+        Ordering::Greater => Some(Side::Left),
+    };
+    let mut a0 = T::orient_2d(line_b[0].clone(), line_b[1].clone(), line_a[0].clone());
+    let mut a1 = T::orient_2d(line_b[0].clone(), line_b[1].clone(), line_a[1].clone());
+    if let Some(side) = side {
+        if side == Side::Right { a0 = -a0; a1 = -a1; }
+        let class = match (a0.partial_cmp(&T::zero()).unwrap(), a1.partial_cmp(&T::zero()).unwrap()) {
+            (Ordering::Greater, _) => InterpClass::Lt0,
+            (Ordering::Equal, _) => InterpClass::Eq0,
+            (Ordering::Less, Ordering::Greater) => InterpClass::Gt0Lt1,
+            (_, Ordering::Equal) => InterpClass::Eq1,
+            (_, Ordering::Less) => InterpClass::Gt1,
+        };
+        let t = -(&a0 / (a1 - &a0));
+        return ClassifiedLineIntersection::Intersection(side, Interp(class, t));
+    } 
+    // parallel
+    let side = match a0.partial_cmp(&T::zero()).unwrap() {
+        Ordering::Less => Some(Side::Right),
+        Ordering::Equal => None,
+        Ordering::Greater => Some(Side::Left)
+    };
+    if let Some(side) = side {
+        return ClassifiedLineIntersection::SeparateParallel(side);
+    }
+    // collinear, or line_b's points are equal
+    if line_b[0] != line_b[1] {
+        // collinear
+        let mut coord_a = line_a.clone().map(|v| v.x.clone());
+        let mut coord_b = line_b.clone().map(|v| v.x.clone());
+        let y_coord_a = line_a.clone().map(|v| v.y.clone());
+        let y_coord_b = line_b.clone().map(|v| v.y.clone());
+        if (&coord_b[0] - &coord_b[1]).abs() < (&y_coord_b[0] - &y_coord_b[1]).abs() {
+            coord_a = y_coord_a;
+            coord_b = y_coord_b;
+        }
+        if coord_b[0] > coord_b[1] {
+            coord_a = coord_a.map(|c| -c);
+            coord_b = coord_b.map(|c| -c);
+        }
+        let classes = coord_a.map(|c| Interp(match (c.partial_cmp(&coord_b[0]).unwrap(), c.partial_cmp(&coord_b[1]).unwrap()) {
+            (Ordering::Less, _) => InterpClass::Lt0,
+            (Ordering::Equal, _) => InterpClass::Eq0,
+            (Ordering::Greater, Ordering::Less) => InterpClass::Gt0Lt1,
+            (_, Ordering::Equal) => InterpClass::Eq1,
+            (_, Ordering::Greater) => InterpClass::Gt1,
+        }, (c - &coord_b[0]) / (&coord_b[1] - &coord_b[0])));
+        return ClassifiedLineIntersection::Collinear(classes);
+    }
+    ClassifiedLineIntersection::Zero
+}
+
 /// The result of intersecting two lines
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LineIntersection<T> {
@@ -717,10 +876,10 @@ pub fn segment_intersect<T: NumEx + RealField>(seg_a: [VectorView2Dyn<T>; 2], se
 mod test {
     use std::fmt::Debug;
 
-    use exact_number::{based_expr};
+    use exact_number::{BasedExpr, based_expr, conversion::BaselessFrom};
     use nalgebra::{Affine2, ClosedSubAssign, Matrix2xX, Scalar, U2, Vector2, matrix, vector};
 
-    use crate::geom::{AngleOps, IntoOrd, IntoOrdAngle, IntoOrdAngleOp, RefIntoOrdAngleOp, SegmentIntersection, VectorView2Dyn, polygon_orientation, polygon_orientation_field, polygon_orientation_ref, pow2i, reflect_line, reflect_line_matrix, segment_intersect, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix, with_max_lsb};
+    use crate::geom::{AngleOps, ClassifiedLineIntersection, Interp, InterpClass, IntoOrd, IntoOrdAngle, IntoOrdAngleOp, RefIntoOrdAngleOp, SegmentIntersection, Side, VectorView2Dyn, polygon_orientation, polygon_orientation_field, polygon_orientation_ref, pow2i, reflect_line, reflect_line_matrix, robust_line_intersect, segment_intersect, sort_by_angle, sort_by_angle_field, sort_by_angle_ref, try_reflect_line, try_reflect_line_matrix, with_max_lsb};
 
     /// Gets the permutation required to take `a` to `b`.
     /// `permutation(a, b).0[i] == i`
@@ -1019,6 +1178,92 @@ mod test {
         (($($a:tt)*), ($($b:tt)*)$(,)?) => {
             nalgebra::vector![exact_number::based_expr!($($a)*), exact_number::based_expr!($($b)*)].as_view()
         };
+    }
+
+    fn robust_line_intersect_test(line_a: [[i32; 2]; 2], line_b: [[i32; 2]; 2], expected: ClassifiedLineIntersection<[i32; 2]>) {
+        let exact_a = line_a.map(|v| vector![BasedExpr::baseless_from(v[0]), BasedExpr::baseless_from(v[1])]);
+        let exact_b = line_b.map(|v| vector![BasedExpr::baseless_from(v[0]), BasedExpr::baseless_from(v[1])]);
+        let exact_expected = expected.clone().map(|[n, d]| BasedExpr::baseless_from(n) / BasedExpr::baseless_from(d));
+        assert_eq!(robust_line_intersect([exact_a[0].as_view(), exact_a[1].as_view()], [exact_b[0].as_view(), exact_b[1].as_view()]), exact_expected);
+        let f64_a = line_a.map(|v| vector![v[0] as f64, v[1] as f64]);
+        let f64_b = line_b.map(|v| vector![v[0] as f64, v[1] as f64]);
+        let f64_expected = expected.clone().map(|[n, d]| n as f64 / d as f64);
+        assert_eq!(robust_line_intersect([f64_a[0].as_view(), f64_a[1].as_view()], [f64_b[0].as_view(), f64_b[1].as_view()]), f64_expected);
+    }
+
+    #[test]
+    fn test_robust_line_intersect() {
+        use ClassifiedLineIntersection::*;
+        use Side::*;
+        use InterpClass::*;
+        // intersecting
+        robust_line_intersect_test([[0,  1], [1,  3]], [[0, 0], [1, 0]], Intersection(Left, Interp(Lt0, [-1, 2])));
+        robust_line_intersect_test([[0,  0], [1,  2]], [[0, 0], [1, 0]], Intersection(Left, Interp(Eq0, [0, 1])));
+        robust_line_intersect_test([[0, -1], [1,  1]], [[0, 0], [1, 0]], Intersection(Left, Interp(Gt0Lt1, [1, 2])));
+        robust_line_intersect_test([[0, -2], [1,  0]], [[0, 0], [1, 0]], Intersection(Left, Interp(Eq1, [1, 1])));
+        robust_line_intersect_test([[0, -3], [1, -1]], [[0, 0], [1, 0]], Intersection(Left, Interp(Gt1, [3, 2])));
+        robust_line_intersect_test([[1, -1], [0, -3]], [[0, 0], [1, 0]], Intersection(Right, Interp(Lt0, [-1, 2])));
+        robust_line_intersect_test([[1,  0], [0, -2]], [[0, 0], [1, 0]], Intersection(Right, Interp(Eq0, [0, 1])));
+        robust_line_intersect_test([[1,  1], [0, -1]], [[0, 0], [1, 0]], Intersection(Right, Interp(Gt0Lt1, [1, 2])));
+        robust_line_intersect_test([[1,  2], [0,  0]], [[0, 0], [1, 0]], Intersection(Right, Interp(Eq1, [1, 1])));
+        robust_line_intersect_test([[1,  3], [0,  1]], [[0, 0], [1, 0]], Intersection(Right, Interp(Gt1, [3, 2])));
+        // separate parallel
+        robust_line_intersect_test([[0, 1], [2, 1]], [[0, 0], [1, 0]], SeparateParallel(Left));
+        robust_line_intersect_test([[0, 1], [2, 1]], [[1, 0], [0, 0]], SeparateParallel(Right));
+        // collinear horizontal
+        robust_line_intersect_test([[0, 0], [0, 0]], [[1, 0], [3, 0]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[0, 0], [1, 0]], [[1, 0], [3, 0]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[0, 0], [2, 0]], [[1, 0], [3, 0]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[0, 0], [3, 0]], [[1, 0], [3, 0]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[0, 0], [4, 0]], [[1, 0], [3, 0]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Gt1   , [ 3, 2])]));
+        robust_line_intersect_test([[1, 0], [0, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[1, 0], [1, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[1, 0], [2, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[1, 0], [3, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[1, 0], [4, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Gt1   , [ 3, 2])]));
+        robust_line_intersect_test([[2, 0], [0, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[2, 0], [1, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[2, 0], [2, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[2, 0], [3, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[2, 0], [4, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Gt1   , [ 3, 2])]));
+        robust_line_intersect_test([[3, 0], [0, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[3, 0], [1, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[3, 0], [2, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[3, 0], [3, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[3, 0], [4, 0]], [[1, 0], [3, 0]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Gt1   , [ 3, 2])]));
+        robust_line_intersect_test([[4, 0], [0, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[4, 0], [1, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[4, 0], [2, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[4, 0], [3, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[4, 0], [4, 0]], [[1, 0], [3, 0]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Gt1   , [ 3, 2])]));
+        // collinear vertical (implementation splits here)
+        robust_line_intersect_test([[0, 0], [0, 0]], [[0, 1], [0, 3]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[0, 0], [0, 1]], [[0, 1], [0, 3]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[0, 0], [0, 2]], [[0, 1], [0, 3]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[0, 0], [0, 3]], [[0, 1], [0, 3]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[0, 0], [0, 4]], [[0, 1], [0, 3]], Collinear([Interp(Lt0   , [-1, 2]), Interp(Gt1   , [ 3, 2])]));
+        robust_line_intersect_test([[0, 1], [0, 0]], [[0, 1], [0, 3]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[0, 1], [0, 1]], [[0, 1], [0, 3]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[0, 1], [0, 2]], [[0, 1], [0, 3]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[0, 1], [0, 3]], [[0, 1], [0, 3]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[0, 1], [0, 4]], [[0, 1], [0, 3]], Collinear([Interp(Eq0   , [ 0, 2]), Interp(Gt1   , [ 3, 2])]));
+        robust_line_intersect_test([[0, 2], [0, 0]], [[0, 1], [0, 3]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[0, 2], [0, 1]], [[0, 1], [0, 3]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[0, 2], [0, 2]], [[0, 1], [0, 3]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[0, 2], [0, 3]], [[0, 1], [0, 3]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[0, 2], [0, 4]], [[0, 1], [0, 3]], Collinear([Interp(Gt0Lt1, [ 1, 2]), Interp(Gt1   , [ 3, 2])]));
+        robust_line_intersect_test([[0, 3], [0, 0]], [[0, 1], [0, 3]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[0, 3], [0, 1]], [[0, 1], [0, 3]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[0, 3], [0, 2]], [[0, 1], [0, 3]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[0, 3], [0, 3]], [[0, 1], [0, 3]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[0, 3], [0, 4]], [[0, 1], [0, 3]], Collinear([Interp(Eq1   , [ 2, 2]), Interp(Gt1   , [ 3, 2])]));
+        robust_line_intersect_test([[0, 4], [0, 0]], [[0, 1], [0, 3]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Lt0   , [-1, 2])]));
+        robust_line_intersect_test([[0, 4], [0, 1]], [[0, 1], [0, 3]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Eq0   , [ 0, 2])]));
+        robust_line_intersect_test([[0, 4], [0, 2]], [[0, 1], [0, 3]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Gt0Lt1, [ 1, 2])]));
+        robust_line_intersect_test([[0, 4], [0, 3]], [[0, 1], [0, 3]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Eq1   , [ 2, 2])]));
+        robust_line_intersect_test([[0, 4], [0, 4]], [[0, 1], [0, 3]], Collinear([Interp(Gt1   , [ 3, 2]), Interp(Gt1   , [ 3, 2])]));
+        // Zero
+        robust_line_intersect_test([[2, 5], [7, 2]], [[4, 6], [4, 6]], Zero);
     }
 
     #[test]
